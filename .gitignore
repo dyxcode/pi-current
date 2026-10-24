@@ -1,0 +1,47 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+
+# Local development instructions and agent state
+/AGENTS.md
+/agent-docs/
+.pi/
+.codex/
+.agents/
+
+# Credentials and browser state belong outside this repository
+.env
+.env.*
+!.env.example
+.auth/
+playwright/.auth/
+browser-profiles/
+storage-state*.json
+
+# Runtime data and generated test artifacts
+.local/
+.data/
+data/
+sessions/
+archives/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+/tests/artifacts/
+/tests/reports/
+/tests/results/
+/test-results/
+/playwright-report/
+
+# Editor and operating system files
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
