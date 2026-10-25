@@ -1,13 +1,44 @@
-import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, realpathSync, mkdirSync, openSync, closeSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { initialize } from "./schema.mjs";
-import { answer, id, saveRequest, searchRequest, readRequest } from "./validation.mjs";
+import { answer, id, readRequest, saveRequest, searchRequest } from "./validation.mjs";
 
 /** @param {unknown} value */
 function hash(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+/** @param {string} value @param {number} offset */
+function characterOffset(value, offset) {
+  let codeUnits = 0;
+  let characters = 0;
+  for (const character of value) {
+    if (codeUnits >= offset) break;
+    codeUnits += character.length;
+    characters++;
+  }
+  return characters;
+}
+/** @param {string} value @param {number} start @param {number} max */
+function characterSlice(value, start, max) {
+  let characterIndex = 0;
+  let codeUnits = 0;
+  let sliceStart = start === 0 ? 0 : undefined;
+  for (const character of value) {
+    if (characterIndex === start && sliceStart === undefined) sliceStart = codeUnits;
+    if (characterIndex === start + max)
+      return {
+        text: value.slice(sliceStart ?? codeUnits, codeUnits),
+        displayTruncated: true,
+      };
+    codeUnits += character.length;
+    characterIndex++;
+  }
+  return {
+    text: value.slice(sliceStart ?? codeUnits, codeUnits),
+    displayTruncated: start > 0,
+  };
 }
 /** @param {string} path */
 function exists(path) {
@@ -123,6 +154,7 @@ function save(db, request) {
       a.sourceCompleteness,
       a.truncated,
       a.metadata ?? null,
+      ...(a.summary === undefined ? [] : [a.summary]),
     ]);
     const version = db
       .prepare("SELECT id FROM item_versions WHERE item_id=? AND hash=?")
@@ -181,13 +213,13 @@ function search(db, request) {
     .all(...params)
     .map((row) => {
       const value = item(row);
-      const chars = [...value.text];
-      const offset = Math.max(0, value.text.toLowerCase().indexOf(query) - 80);
-      const start = [...value.text.slice(0, offset)].length;
+      const match = value.text.toLowerCase().indexOf(query);
+      const start = Math.max(0, characterOffset(value.text, Math.max(0, match)) - 80);
+      const excerpt = characterSlice(value.text, start, 400);
       return {
         ...value,
-        text: chars.slice(start, start + 400).join(""),
-        displayTruncated: chars.length > 400,
+        text: excerpt.text,
+        displayTruncated: excerpt.displayTruncated,
       };
     });
 }
@@ -199,9 +231,9 @@ function read(db, request) {
     .get(...(request.versionId ? [request.itemId, request.versionId] : [request.itemId]));
   if (!row) return undefined;
   const value = item(row);
-  const chars = [...value.text];
   const max = request.maxCharacters ?? 20000;
-  return { ...value, text: chars.slice(0, max).join(""), displayTruncated: chars.length > max };
+  const excerpt = characterSlice(value.text, 0, max);
+  return { ...value, text: excerpt.text, displayTruncated: excerpt.displayTruncated };
 }
 /** @param {import('node:sqlite').DatabaseSync} db @param {string} itemId */
 function remove(db, itemId) {

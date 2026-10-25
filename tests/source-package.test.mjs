@@ -94,5 +94,5 @@ export default {
   );
   assert.ok(extension);
   assert.deepEqual([...extension.commands.keys()], ["sources"]);
-  assert.equal(extension.tools.size, 8);
+  assert.equal(extension.tools.size, 10);
 });

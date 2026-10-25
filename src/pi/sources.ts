@@ -8,6 +8,7 @@ import { SQLiteContentLibrary } from "../library/store.ts";
 import type { ContentLibrary } from "../library/types.ts";
 import { RequestAuthorization } from "./authorization.ts";
 import { localResultSchema, receipt, registerLocalCards, statusLabel } from "./cards.ts";
+import { registerSourceOperations } from "./source-operations.ts";
 
 export { localResultSchema } from "./cards.ts";
 
@@ -30,7 +31,7 @@ export function registerSources(
   let generation = 0;
   let sessionAbort = new AbortController();
   const authorization = new RequestAuthorization();
-  const { card, statusCard, itemCard } = registerLocalCards(pi);
+  const { card, statusCard, itemCard, discoveryCard } = registerLocalCards(pi);
 
   // Each operation keeps its original dependencies and cancellation signal.
   const operation = (caller?: AbortSignal) => ({
@@ -45,6 +46,7 @@ export function registerSources(
   const transition = async (reopen: boolean) => {
     const revision = ++generation;
     authorization.clear();
+    operations.clear();
     sessionAbort.abort();
     await Promise.allSettled([registry.close(), library.close()]);
     if (reopen && revision === generation) {
@@ -54,13 +56,22 @@ export function registerSources(
     }
   };
 
+  const operations = registerSourceOperations(pi, {
+    snapshot: operation,
+    current,
+    authorization,
+    card,
+    itemCard,
+    discoveryCard,
+  });
+
   pi.on("input", (event) => {
     if (sessionAbort.signal.aborted) {
       authorization.clear();
       return;
     }
     const sourceRegistry = registry;
-    return authorization.capture(event, () => sourceRegistry.list());
+    return authorization.capture(event, () => sourceRegistry.list(), operations.latestRef);
   });
   pi.on("agent_end", () => authorization.clear());
   pi.on("session_shutdown", () => transition(false));
@@ -102,11 +113,15 @@ export function registerSources(
           }
           const row = rows[labels.indexOf(choice)];
           if (!row) continue;
-          const actions = [
+          const accessMethods = [
             ...(row.capabilities.login
-              ? [row.auth === "not-connected" ? "Log in" : "Reconnect"]
+              ? [{ name: "Source access", id: undefined, check: row.capabilities.check }]
               : []),
-            ...(row.capabilities.check ? ["Check connection"] : []),
+            ...(row.connections ?? []).filter((connection) => connection.login),
+          ];
+          const actions = [
+            "View status",
+            ...(accessMethods.length ? ["Set up access…"] : []),
             row.enabled ? "Disable" : "Enable",
             "Remove source",
             "Back",
@@ -116,16 +131,32 @@ export function registerSources(
             actions,
           );
           current(run);
-          if (action === "Log in" || action === "Reconnect") {
-            await run.registry.login(row.id, run.signal);
+          if (action === "Set up access…") {
+            let method = accessMethods[0];
+            if (accessMethods.length > 1) {
+              const names = accessMethods.map((value) => value.name);
+              const needsNumbers = new Set(names).size !== names.length || names.includes("Back");
+              const labels = names.map((name, index) =>
+                needsNumbers ? `${index + 1}. ${name}` : name,
+              );
+              const selected = await ctx.ui.select(`Set up access — ${row.name}`, [
+                ...labels,
+                "Back",
+              ]);
+              current(run);
+              if (!selected || selected === "Back") continue;
+              method = accessMethods[labels.indexOf(selected)];
+            }
+            if (!method) continue;
+            await run.registry.login(row.id, run.signal, method.id);
             current(run);
             ctx.ui.notify(
-              "Complete login, then explicitly check the connection. No collection started.",
+              method.check
+                ? "Access setup finished. Explicitly request a connection check to verify access."
+                : "Access setup finished.",
               "info",
             );
-          } else if (action === "Check connection") {
-            await run.registry.check(row.id, run.signal);
-            current(run);
+          } else if (action === "View status") {
             const status = (await run.registry.list()).find((source) => source.id === row.id);
             current(run);
             if (status) statusCard(status);
@@ -151,13 +182,14 @@ export function registerSources(
     name: "current_sources",
     label: "Sources · login and status",
     description:
-      "List registered source IDs and cached status. Login/check require an explicit request naming the source. Use /sources to register or remove plugins; this tool cannot register code.",
+      "List registered source IDs, declared operations/connections and cached status. Login/check require an explicit request naming the source and connection when applicable. Use /sources to register or remove plugins; this tool cannot register code.",
     promptSnippet:
       "List cached source status, or log in/check a named source after an explicit request.",
     parameters: Type.Object(
       {
         action: StringEnum(["list", "login", "check"] as const),
         source: Type.Optional(sourceSchema),
+        connection: Type.Optional(sourceSchema),
       },
       { additionalProperties: false },
     ),
@@ -166,9 +198,9 @@ export function registerSources(
       const run = operation(signal);
       if (args.action !== "list") {
         if (!args.source) throw new Error("SOURCE_ACTION_NOT_REQUESTED");
-        authorization.take(args.action, args.source);
+        authorization.take(args.action, args.source, undefined, args.connection);
         current(run);
-        await run.registry[args.action](args.source, run.signal);
+        await run.registry[args.action](args.source, run.signal, args.connection);
         current(run);
       }
       current(run);
@@ -182,6 +214,8 @@ export function registerSources(
           id: source.id,
           name: source.name,
           status: statusLabel(source),
+          ...(source.operations ? { operations: source.operations } : {}),
+          ...(source.connections ? { connections: source.connections } : {}),
         })),
       });
     },
@@ -362,10 +396,13 @@ export function registerSources(
       current(run);
       const id = await run.registry.resolve(request.url, request.source);
       current(run);
+      const startedAt = new Date().toISOString();
       const item = await run.registry.read(id, request.url, maxCharacters, run.signal);
       current(run);
       itemCard(item);
-      return receipt(id, 1, "Requested item displayed locally.");
+      const pendingRef = operations.rememberItem(item, startedAt);
+      card("Fetched content", `Not saved. To retain it: Save fetched batch ${pendingRef}`);
+      return receipt(id, 1, "Requested item displayed locally.", { pendingRef });
     },
   };
 }

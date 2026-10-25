@@ -21,8 +21,9 @@ Source Plugin 将 pi-current 连接到需要登录或使用专门方式获取文
 
 1. 在 Pi 中打开 `/sources`，选择 **Add source**。
 2. 输入本地 `.mjs`、`.js` 或 `.ts` 插件文件的绝对路径。
-3. 如果来源提供相应选项，使用 **Log in** 或 **Reconnect** 完成登录，通过 **Check connection** 检查访问状态。
-4. 在聊天中请求单篇文章或一批内容。
+3. 选择来源，使用 **Set up access…** 配置访问方式。如果提供多种方式，再选择其中一种。
+4. 使用 **View status** 一次查看所有连接已记录的状态和上次检查时间。如果插件支持检查访问状态，可在聊天中明确请求检查连接。
+5. 在聊天中请求单篇文章或一批内容。
 
 请求中使用已注册的来源 ID 或显示名称。以注册 ID 为 `sample` 的来源为例：
 
@@ -33,13 +34,13 @@ Source Plugin 将 pi-current 连接到需要登录或使用专门方式获取文
 | `Read https://example.com/article from sample` | 获取单篇文章 |
 | `Collect 3 items from sample` | 获取并保存一批内容 |
 
-`/sources` 还可以启用、禁用、重新连接或移除来源。
+`/sources` 还可以启用、禁用或移除来源。
 
 注册 [`examples/source-plugin.mjs`](../../examples/source-plugin.mjs)，可以用示例文章体验来源管理和内容库。
 
 ## 浏览已保存内容
 
-采集的文章保存在本地内容库中。让 Pi 展示已保存条目、搜索内容库，或打开一篇已保存文章即可。来源文章显示在 Pi 本地卡片中。
+采集的文章保存在本地内容库中。明确请求保存时，会保留获取到的完整正文。让 Pi 展示已保存条目、搜索内容库，或打开一篇已保存文章即可。来源卡片显示标题，以及最多 200 个字符的来源摘要或正文预览。
 
 内容库搜索也能找到已禁用或移除来源的历史文章。删除条目时，使用 `Delete saved item ITEM_ID`。
 

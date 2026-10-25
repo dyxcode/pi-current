@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { mkdtemp, rm, readFile, writeFile, mkdir, stat, symlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
 import { SQLiteContentLibrary } from "../src/library/store.ts";
+import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "../src/sources/content-limits.mjs";
 
 const time = "2026-10-23T00:00:00.000Z";
 function answer(overrides = {}) {
@@ -298,6 +299,114 @@ test("API acquisition evidence survives persistence and does not deduplicate int
   assert.equal(saved.metadata.apiReportedTruncated, false);
   await assert.rejects(
     store.save(request([answer({ retrievalMethod: "mobile-api", apiReportedTruncated: "false" })])),
+    /LIBRARY_INVALID/,
+  );
+});
+
+test("long multilingual article bodies remain intact and searchable beyond the excerpt", async (t) => {
+  const { store } = await setup(t);
+  const tail = "FULL_ARTICLE_TAIL_7f93";
+  const body = `${"中文🧪 multilingual body ".repeat(4000)}${tail}`;
+  assert.ok(body.length > 50000);
+  const saved = await store.save(request([answer({ text: body })]));
+  const itemId = saved.items[0].itemId;
+
+  const matches = await store.search({ query: tail });
+  assert.equal(matches.length, 1);
+  assert.match(matches[0].text, new RegExp(tail));
+  assert.equal(matches[0].displayTruncated, true);
+  assert.equal(matches[0].truncated, false);
+  assert.equal(matches[0].sourceCompleteness, "unknown");
+
+  const full = await store.read({ itemId, maxCharacters: MAX_ARTICLE_BYTES });
+  assert.equal(full.text, body);
+  assert.equal(full.displayTruncated, false);
+  assert.equal(full.truncated, false);
+  assert.equal(full.sourceCompleteness, "unknown");
+});
+
+test("a batch over 25,000 characters saves every requested item in full", async (t) => {
+  const { store } = await setup(t);
+  const items = Array.from({ length: 10 }, (_, index) =>
+    answer({
+      externalId: String(index + 1),
+      url: `https://example.com/article/${index + 1}`,
+      observedPosition: index + 1,
+      text: `BATCH_ITEM_${index + 1}_${"界".repeat(3000)}_END_${index + 1}`,
+    }),
+  );
+  assert.ok(items.reduce((total, item) => total + Array.from(item.text).length, 0) > 25000);
+
+  const saved = await store.save(request(items, { requestedCount: items.length }));
+  assert.equal(saved.items.length, items.length);
+  for (let index = 0; index < items.length; index++) {
+    const stored = await store.read({
+      itemId: saved.items[index].itemId,
+      maxCharacters: MAX_ARTICLE_BYTES,
+    });
+    assert.equal(stored.text, items[index].text, `item ${index + 1} body`);
+    assert.equal(stored.displayTruncated, false, `item ${index + 1} display`);
+  }
+  assert.equal((await store.search({ query: "BATCH_ITEM_10" })).length, 1);
+});
+
+test("oversized UTF-8 article bodies are rejected before the database is created", async (t) => {
+  const { store, path } = await setup(t);
+  const tooLarge = "界".repeat(Math.floor(MAX_ARTICLE_BYTES / 3) + 1);
+  await assert.rejects(store.save(request([answer({ text: tooLarge })])), /LIBRARY_INVALID/);
+  await assert.rejects(stat(path), { code: "ENOENT" });
+});
+
+test("optional summaries are preserved, versioned, and validated without changing summary-less versions", async (t) => {
+  const { store, path } = await setup(t);
+  const withoutSummary = await store.save(request());
+  const sameWithoutSummary = await store.save(request());
+  assert.equal(sameWithoutSummary.items[0].versionId, withoutSummary.items[0].versionId);
+  assert.equal((await store.read({ itemId: withoutSummary.items[0].itemId })).summary, undefined);
+  const legacyHash = createHash("sha256")
+    .update(
+      JSON.stringify([
+        answer().url,
+        answer().title,
+        answer().author ?? null,
+        answer().text,
+        answer().sourceCompleteness,
+        answer().truncated,
+        answer().metadata ?? null,
+      ]),
+    )
+    .digest("hex");
+  const db = new DatabaseSync(path);
+  try {
+    assert.equal(
+      db.prepare("SELECT hash FROM item_versions WHERE id=?").get(withoutSummary.items[0].versionId)
+        .hash,
+      legacyHash,
+    );
+  } finally {
+    db.close();
+  }
+
+  const summary = `  摘要🧪${"概述界 ".repeat(600)} end  `;
+  assert.ok(Array.from(summary).length <= MAX_SUMMARY_CHARACTERS);
+  const withSummary = await store.save(request([answer({ summary })]));
+  assert.notEqual(withSummary.items[0].versionId, withoutSummary.items[0].versionId);
+  assert.equal((await store.read({ itemId: withSummary.items[0].itemId })).summary, summary);
+
+  const revisedSummary = await store.save(request([answer({ summary: `${summary}!` })]));
+  assert.notEqual(revisedSummary.items[0].versionId, withSummary.items[0].versionId);
+  assert.equal(
+    (await store.read({ itemId: revisedSummary.items[0].itemId })).summary,
+    `${summary}!`,
+  );
+
+  await assert.rejects(store.save(request([answer({ summary: 42 })])), /LIBRARY_INVALID/);
+  await assert.rejects(
+    store.save(request([answer({ summary: "界".repeat(MAX_SUMMARY_CHARACTERS + 1) })])),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(
+    store.save(request([answer({ unexpectedSummary: "not allowlisted" })])),
     /LIBRARY_INVALID/,
   );
 });

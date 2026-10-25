@@ -1,13 +1,13 @@
 import { fork } from "node:child_process";
 import type {
   ContentLibrary,
-  LibraryItem,
   LibraryBatch,
+  LibraryItem,
   ReadRequest,
   SaveRequest,
   SearchRequest,
 } from "./types.ts";
-import { id, saveRequest, searchRequest, readRequest } from "./validation.mjs";
+import { id, readRequest, saveRequest, searchRequest } from "./validation.mjs";
 
 /** Lazy SQLite adapter. Child processes own connections/transactions; the Pi thread never runs SQL.
  * Process isolation lets cancellation stop native SQLite statements, unlike Worker.terminate().
@@ -55,7 +55,7 @@ export class SQLiteContentLibrary implements ContentLibrary {
         if (this.closed) throw new Error("LIBRARY_CLOSED");
         if (signal?.aborted) throw new Error("LIBRARY_CANCELLED");
         const worker = fork(new URL("./worker.mjs", import.meta.url), [], {
-          execArgv: ["--max-old-space-size=64"],
+          execArgv: ["--max-old-space-size=256"],
           serialization: "advanced",
           stdio: ["ignore", "ignore", "ignore", "ipc"],
         });

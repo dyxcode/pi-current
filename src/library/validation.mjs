@@ -1,17 +1,34 @@
+import {
+  MAX_ARTICLE_BYTES,
+  MAX_BATCH_BYTES,
+  MAX_SUMMARY_CHARACTERS,
+} from "../sources/content-limits.mjs";
+
 /** @param {unknown} value @returns {asserts value is Record<string, unknown>} */
 function object(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("LIBRARY_INVALID");
 }
-/** @param {unknown} value @param {number} max @param {boolean} [empty] @returns {asserts value is string} */
-function text(value, max, empty = false) {
+/** @param {unknown} value @returns {asserts value is string} */
+function article(value) {
   if (
     typeof value !== "string" ||
+    value.length > MAX_ARTICLE_BYTES ||
+    Buffer.byteLength(value, "utf8") > MAX_ARTICLE_BYTES ||
     value.includes("\0") ||
-    (!empty && !value.trim()) ||
-    [...value].length > max
+    !value.trim()
   )
     throw new Error("LIBRARY_INVALID");
+}
+/** @param {unknown} value @param {number} max @param {boolean} [empty] @returns {asserts value is string} */
+function text(value, max, empty = false) {
+  if (typeof value !== "string" || value.includes("\0") || (!empty && !value.trim()))
+    throw new Error("LIBRARY_INVALID");
+  let characters = 0;
+  for (const _character of value) {
+    characters++;
+    if (characters > max) throw new Error("LIBRARY_INVALID");
+  }
 }
 /** @param {unknown} value @param {number} max */
 function integer(value, max) {
@@ -48,7 +65,8 @@ export function answer(value) {
     throw new Error("LIBRARY_INVALID");
   text(value.title, 2000, true);
   if (value.author !== undefined) text(value.author, 1000, true);
-  text(value.text, 5000);
+  article(value.text);
+  if (value.summary !== undefined) text(value.summary, MAX_SUMMARY_CHARACTERS, true);
   date(value.retrievedAt);
   if (value.discoveredAt !== undefined) date(value.discoveredAt);
   if (value.observedPosition !== undefined) integer(value.observedPosition, 10000);
@@ -66,6 +84,7 @@ export function answer(value) {
           "url",
           "title",
           "author",
+          "summary",
           "text",
           "retrievedAt",
           "discoveredAt",
@@ -116,9 +135,9 @@ export function saveRequest(value) {
     if (ids.has(item.externalId) || item.sourceId !== batch.sourceId)
       throw new Error("LIBRARY_INVALID");
     ids.add(item.externalId);
-    size += [...item.text].length;
+    size += Buffer.byteLength(item.text, "utf8");
+    if (size > MAX_BATCH_BYTES) throw new Error("LIBRARY_INVALID");
   }
-  if (size > 25000) throw new Error("LIBRARY_INVALID");
   for (const failure of batch.failures) {
     object(failure);
     text(failure.externalId, 256);
@@ -143,7 +162,7 @@ export function readRequest(value) {
   object(value);
   id(value.itemId);
   if (value.versionId !== undefined) id(value.versionId);
-  if (value.maxCharacters !== undefined) integer(value.maxCharacters, 20000);
+  if (value.maxCharacters !== undefined) integer(value.maxCharacters, MAX_ARTICLE_BYTES);
   if (Object.keys(value).some((key) => !["itemId", "versionId", "maxCharacters"].includes(key)))
     throw new Error("LIBRARY_INVALID");
 }

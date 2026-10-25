@@ -21,8 +21,9 @@ Source Plugins connect pi-current to sites that need login or their own article 
 
 1. Open `/sources` in Pi and select **Add source**.
 2. Enter the absolute path to your local `.mjs`, `.js`, or `.ts` plugin.
-3. Use **Log in** or **Reconnect** to complete login, and **Check connection** to check access, when these options are available.
-4. Request an article or a batch in chat.
+3. Select the source and use **Set up access…** to configure access. If it offers several methods, choose one.
+4. Use **View status** to see all cached connection states and their last check times. If the plugin supports checking access, request a connection check in chat.
+5. Request an article or a batch in chat.
 
 Use the registered source ID or display name in your request. For a source registered as `sample`:
 
@@ -33,13 +34,13 @@ Use the registered source ID or display name in your request. For a source regis
 | `Read https://example.com/article from sample` | Retrieve one article |
 | `Collect 3 items from sample` | Retrieve and save a batch |
 
-`/sources` also lets you enable, disable, reconnect, or remove a source.
+`/sources` also lets you enable, disable, or remove a source.
 
 To try source management and the library with sample articles, register [`examples/source-plugin.mjs`](examples/source-plugin.mjs).
 
 ## Browse saved content
 
-Collected articles are saved in a local library. Ask Pi to show saved items, search the library, or open a saved article. Source articles appear in local Pi cards.
+Collected articles are saved in a local library. Requested saves retain the retrieved article body. Ask Pi to show saved items, search the library, or open a saved article. Source cards show the title and up to 200 characters of a supplied summary or body preview.
 
 Library search can find saved articles from disabled or removed sources. To delete an item, use `Delete saved item ITEM_ID`.
 

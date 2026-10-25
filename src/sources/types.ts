@@ -1,3 +1,5 @@
+import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "./content-limits.mjs";
+
 export type AuthState =
   | "not-connected"
   | "not-required"
@@ -18,6 +20,7 @@ export type SourceItem = {
   url: string;
   title: string;
   author?: string;
+  summary?: string;
   text: string;
   retrievedAt: string;
   discoveredAt?: string;
@@ -34,6 +37,45 @@ export type SourceBatch = {
   }[];
   stopReason: string;
 };
+export type SourceConnection = {
+  id: string;
+  name: string;
+  login: boolean;
+  check: boolean;
+};
+export type SourceOperationSpec = {
+  id: string;
+  name: string;
+  kind: "discover" | "read" | "acquire";
+  connection: string;
+  connections?: string[];
+  input?: "query" | "url";
+};
+export type SourceOperationRequest = {
+  limit: number;
+  maxRequests: number;
+  // Presentation preference; article bodies are retained under separate byte ceilings.
+  maxCharacters: number;
+  query?: string;
+  url?: string;
+};
+export type SourceDiscovery = {
+  sourceId: string;
+  externalId: string;
+  url: string;
+  title: string;
+  summary: string;
+  contentType: string;
+  discoveredAt: string;
+  observedPosition?: number;
+};
+export type SourceDiscoveryBatch = {
+  items: SourceDiscovery[];
+  stopReason: string;
+};
+export type SourceOperationResult =
+  | { kind: "discovery"; batch: SourceDiscoveryBatch; failureConnection?: string }
+  | { kind: "content"; batch: SourceBatch; failureConnection?: string };
 export type Batch = SourceBatch & {
   id: string;
   sourceId: string;
@@ -48,6 +90,13 @@ export interface SourceAdapter {
   check?(signal: AbortSignal): Promise<AuthState>;
   read?(url: string, maxCharacters: number, signal: AbortSignal): Promise<SourceItem>;
   collect?(limit: number, signal: AbortSignal): Promise<SourceBatch>;
+  perform?(
+    operation: string,
+    request: SourceOperationRequest,
+    signal: AbortSignal,
+  ): Promise<SourceOperationResult>;
+  loginConnection?(connection: string, signal: AbortSignal): Promise<void>;
+  checkConnection?(connection: string, signal: AbortSignal): Promise<AuthState>;
   close(): Promise<void>;
 }
 /** Trusted local code. Import/create must not initiate login, checks or collection. */
@@ -57,13 +106,22 @@ export interface SourcePlugin {
   name: string;
   hosts: string[];
   capabilities: Capabilities;
+  connections?: SourceConnection[];
+  operations?: SourceOperationSpec[];
   create(context: SourceContext): Promise<SourceAdapter>;
 }
+export type ConnectionState = {
+  auth: AuthState;
+  checkedAt?: string;
+  problem?: string;
+  pause?: string;
+};
 export type SourceState = {
   auth: AuthState;
   checkedAt?: string;
   problem?: string;
   pause?: string;
+  connections?: Record<string, ConnectionState>;
 };
 export type Registration = {
   id: string;
@@ -71,9 +129,15 @@ export type Registration = {
   modulePath: string;
   hosts: string[];
   capabilities: Capabilities;
+  connections?: SourceConnection[];
+  operations?: SourceOperationSpec[];
   enabled: boolean;
 };
-export type SourceStatus = Registration & SourceState;
+export type SourceStatus = Omit<Registration, "connections"> &
+  Omit<SourceState, "connections"> & {
+    connections?: SourceConnection[];
+    connectionStates?: Record<string, ConnectionState>;
+  };
 export const ERROR_CODES = [
   "SOURCE_ERROR",
   "SOURCE_BUSY",
@@ -136,7 +200,7 @@ export function canonicalUrl(value: string): string {
 export function validateItem(
   value: unknown,
   sourceId: string,
-  maxCharacters: number,
+  maxCharacters: number = MAX_ARTICLE_BYTES,
 ): asserts value is SourceItem {
   if (!value || typeof value !== "object") throw new Error("SOURCE_INVALID_RESULT");
   const v = value as Record<string, unknown>;
@@ -152,7 +216,10 @@ export function validateItem(
     v.title.length > 2000 ||
     typeof v.text !== "string" ||
     !v.text.trim() ||
-    [...v.text].length > maxCharacters ||
+    Buffer.byteLength(v.text, "utf8") > MAX_ARTICLE_BYTES ||
+    (maxCharacters < MAX_ARTICLE_BYTES && [...v.text].length > maxCharacters) ||
+    (v.summary !== undefined &&
+      (typeof v.summary !== "string" || [...v.summary].length > MAX_SUMMARY_CHARACTERS)) ||
     (v.author !== undefined && (typeof v.author !== "string" || v.author.length > 1000)) ||
     typeof v.retrievedAt !== "string" ||
     !Number.isFinite(Date.parse(v.retrievedAt)) ||
@@ -184,6 +251,7 @@ export function validateItem(
           "url",
           "title",
           "author",
+          "summary",
           "text",
           "retrievedAt",
           "discoveredAt",

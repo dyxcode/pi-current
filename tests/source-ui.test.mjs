@@ -18,7 +18,7 @@ test("/sources registers a local module without collecting; capability actions a
   const choices = [
     "Add source",
     "Sample",
-    "Log in",
+    "Set up access…",
     "Sample",
     "Disable",
     "Sample",

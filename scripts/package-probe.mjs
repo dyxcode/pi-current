@@ -79,7 +79,7 @@ const extension = loaded.extensions.find(
   (value) => value.resolvedPath === join(installed, "src/index.ts"),
 );
 assert.ok(extension);
-assert.equal(extension.tools.size, 8);
+assert.equal(extension.tools.size, 10);
 assert.deepEqual([...extension.commands.keys()], ["sources"]);
 console.log(
   "PASS: isolated Pi loading, external JS/TS plugin dependencies, HTML worker and SQLite collection workflow.",
