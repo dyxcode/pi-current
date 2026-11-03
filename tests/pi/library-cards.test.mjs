@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createEventBus, wrapRegisteredTools } from "@earendil-works/pi-coding-agent";
+import {
+  buildSessionContext,
+  createEventBus,
+  SessionManager,
+  wrapRegisteredTools,
+} from "@earendil-works/pi-coding-agent";
 import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { prepareCompaction } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
 import { registerSources } from "../../src/pi/sources.ts";
 import { SourceRegistry } from "../../src/sources/registry.ts";
 import { createSearchHarness } from "../helpers/search-harness.mjs";
@@ -59,7 +65,7 @@ async function piLibraryHarness(t, value) {
   const tools = wrapRegisteredTools([...extension.tools.values()], h.runner);
   t.after(async () => {
     runtime.appendEntry = appendEntry;
-    await Promise.allSettled([registry.close(), library.close()]);
+    await library.close();
   });
   return { extension, entries, tools };
 }
@@ -103,10 +109,13 @@ test("real Pi library search displays a stored candidate as link and source summ
 
 test("real Pi library read shows a link-only candidate without body metadata or preview", async (t) => {
   const value = candidate({ title: "Link-only article" });
-  const { extension, entries, tools } = await piLibraryHarness(t, value);
-  const tool = tools.find((entry) => entry.name === "current_library_read");
-  assert.ok(tool, "Pi wraps the offline library read tool");
-  const result = await tool.execute("candidate-read", { itemId });
+  const { extension, entries } = await piLibraryHarness(t, value);
+  const tool = extension.tools.get("current_library_read");
+  assert.ok(tool, "Pi registered the offline library read tool");
+  const result = await tool.definition.execute("candidate-read", { itemId }, undefined, undefined, {
+    mode: "tui",
+    hasUI: true,
+  });
 
   assert.deepEqual(result.structuredContent.references, [{ itemId, versionId }]);
   assert.doesNotMatch(
@@ -123,4 +132,45 @@ test("real Pi library read shows a link-only candidate without body metadata or 
     /Retrieved:|Body preview:|completeness|truncated|No preview text/,
   );
   assert.match(render(extension, entry), /Link only\./);
+});
+
+test("a candidate read without an interactive TUI reports unread and does not append a card", async (t) => {
+  const value = candidate({ title: "Offline candidate" });
+  const { extension, entries } = await piLibraryHarness(t, value);
+  const tool = extension.tools.get("current_library_read");
+  const result = await tool.definition.execute("candidate-read", { itemId }, undefined, undefined, {
+    mode: "rpc",
+    hasUI: false,
+  });
+
+  assert.equal(result.structuredContent.status, "unread");
+  assert.deepEqual(result.structuredContent.references, [{ itemId, versionId }]);
+  assert.deepEqual(entries, []);
+  assert.doesNotMatch(JSON.stringify(result), /Offline candidate|https:\/\/example\.com/);
+});
+
+test("Pi excludes local preview cards from model context and compaction", () => {
+  const session = SessionManager.inMemory();
+  session.appendCustomEntry("pi-current-local-card", {
+    title: "PRIVATE_TITLE",
+    body: `Body preview: ${"PRIVATE_BODY ".repeat(30)}`,
+  });
+  session.appendMessage({
+    role: "user",
+    content: "ordinary message ".repeat(100),
+    timestamp: Date.now(),
+  });
+  session.appendMessage({ role: "user", content: "another message", timestamp: Date.now() });
+  session.appendModelChange("fixture", "fixture");
+
+  const context = JSON.stringify(buildSessionContext(structuredClone(session.getEntries())));
+  const compaction = JSON.stringify(
+    prepareCompaction(session.getEntries(), {
+      enabled: true,
+      reserveTokens: 10,
+      keepRecentTokens: 1,
+    }),
+  );
+  assert.doesNotMatch(context, /PRIVATE_TITLE|PRIVATE_BODY/);
+  assert.doesNotMatch(compaction, /PRIVATE_TITLE|PRIVATE_BODY/);
 });

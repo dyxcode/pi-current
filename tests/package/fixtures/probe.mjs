@@ -151,11 +151,11 @@ await writeFile(
 );
 const plugin = `import { body } from 'probe-helper';
 export default {
-  apiVersion: 1, id: 'sample', name: 'Sample', hosts: ['example.com'],
-  capabilities: { login: false, check: false, read: true, collect: true },
-  async create({ sourceId }) {
-    const item = { sourceId, externalId: 'one', url: 'https://example.com/a', title: 'Synthetic', text: body, retrievedAt: '2026-01-01T00:00:00.000Z', sourceCompleteness: 'unknown', truncated: false };
-    return { async read() { return item; }, async collect() { return { items: [item], failures: [], stopReason: 'limit' }; }, async close() {} };
+  id: 'sample', name: 'Sample',
+  async fetch(input, {signal}) {
+    signal.throwIfAborted();
+    const item = { externalId: 'one', url: 'https://example.com/a', title: 'Synthetic', text: body, retrievedAt: '2026-01-01T00:00:00.000Z', sourceCompleteness: 'unknown', truncated: false };
+    return { items: [item], issues: [] };
   },
 };`;
 await writeFile(join(pluginDir, "sample.mjs"), plugin);
@@ -163,7 +163,10 @@ await writeFile(
   join(pluginDir, "sample.ts"),
   plugin
     .replace("id: 'sample'", "id: 'typescript'")
-    .replace("async create({ sourceId })", "async create({ sourceId }: { sourceId: string })"),
+    .replace(
+      "async fetch(input, {signal})",
+      "async fetch(input: {url: string; limit: number}, {signal}: {signal: AbortSignal})",
+    ),
 );
 
 globalThis.fetch = async () => {
@@ -191,8 +194,8 @@ const extension = loaded.extensions.find(
   (value) => value.resolvedPath === join(installed, "src/index.ts"),
 );
 assert.ok(extension);
-assert.equal(extension.tools.size, 10);
+assert.equal(extension.tools.size, 7);
 assert.deepEqual([...extension.commands.keys()], ["sources"]);
 console.log(
-  "PASS: isolated Pi loading, external JS/TS plugin dependencies, HTML worker and SQLite collection workflow.",
+  "PASS: isolated Pi loading, external JS/TS plugin dependencies, HTML worker and SQLite import workflow.",
 );

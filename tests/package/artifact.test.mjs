@@ -52,8 +52,8 @@ test("actual npm artifact loads in Pi and registers external JS and TS plugins w
 export default {
   ...plugin,
   id: "typescript",
-  async create(context: { sourceId: string; dataDir: string }) {
-    return plugin.create(context);
+  async fetch(input: {url: string; limit: number}, context: {signal: AbortSignal}) {
+    return plugin.fetch(input, context);
   },
 };`,
   );
@@ -61,7 +61,22 @@ export default {
   const entry = join(root, "register.mjs");
   await writeFile(
     entry,
-    `import {SourceRegistry} from ${JSON.stringify(join(installed, "src/sources/registry.ts"))};import {SQLiteContentLibrary} from ${JSON.stringify(join(installed, "src/library/store.ts"))};export default async function(pi){const registry=new SourceRegistry({root:${JSON.stringify(data)}});await registry.register(${JSON.stringify(plugin)});await registry.register(${JSON.stringify(tsPlugin)});const batch=await registry.collect('sample',1);const library=new SQLiteContentLibrary(registry.root);await library.save({requestedCount:1,startedAt:new Date().toISOString(),batch:{...batch,id:'11111111-1111-1111-1111-111111111111',sourceId:'sample',collectedAt:new Date().toISOString()}});if((await library.search({query:'synthetic'})).length!==1)throw new Error('PACKAGED_LIBRARY_FAILED');await library.close();await registry.close();}`,
+    `import {SourceRegistry} from ${JSON.stringify(join(installed, "src/sources/registry.ts"))};
+import {importSource} from ${JSON.stringify(join(installed, "src/sources/import.ts"))};
+import {SQLiteContentLibrary} from ${JSON.stringify(join(installed, "src/library/store.ts"))};
+export default async function(){
+  const registry=new SourceRegistry({root:${JSON.stringify(data)}});
+  await registry.register(${JSON.stringify(plugin)});
+  await registry.register(${JSON.stringify(tsPlugin)});
+  const library=new SQLiteContentLibrary(registry.root);
+  try {
+    for(const id of ['sample','typescript']) {
+      const result=await importSource(await registry.get(id),library,{url:'https://example.com/feed.xml',limit:2});
+      if(result.batch.items.length!==2) throw new Error('PACKAGED_IMPORT_FAILED');
+    }
+    if((await library.search({query:'synthetic'})).length!==4)throw new Error('PACKAGED_LIBRARY_FAILED');
+  } finally {await library.close();}
+}`,
   );
   const original = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -94,5 +109,16 @@ export default {
   );
   assert.ok(extension);
   assert.deepEqual([...extension.commands.keys()], ["sources"]);
-  assert.equal(extension.tools.size, 10);
+  assert.deepEqual(
+    [...extension.tools.keys()].sort(),
+    [
+      "current_sources",
+      "current_source_import",
+      "current_library_search",
+      "current_library_read",
+      "current_library_remove",
+      "current_web_search",
+      "current_web_read",
+    ].sort(),
+  );
 });

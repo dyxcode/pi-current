@@ -1,4 +1,4 @@
-import { collectAndSave } from "__PACKAGE_ROOT__/src/sources/collection.ts";
+import { importSource } from "__PACKAGE_ROOT__/src/sources/import.ts";
 import { SourceRegistry } from "__PACKAGE_ROOT__/src/sources/registry.ts";
 import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 import assert from "node:assert/strict";
@@ -15,16 +15,19 @@ export default async function () {
     assert.equal(library.apiVersion, 2);
     await registry.register(join(root, "external-plugins/sample.mjs"));
     await registry.register(join(root, "external-plugins/sample.ts"));
+    const request = { url: "https://example.com/feed.xml", limit: 1 };
+    const tsModule = await registry.get("typescript");
     assert.equal(
-      (await registry.read("typescript", "https://example.com/a", 2000)).text,
+      (await tsModule.fetch(request, { signal: AbortSignal.timeout(5000) })).items[0]?.text,
       "Synthetic independent plugin dependency.",
     );
-    const outcome = await collectAndSave(registry, library, { sourceId: "sample", limit: 1 });
-    assert.equal(outcome.storage.status, "saved");
+    const outcome = await importSource(await registry.get("sample"), library, request);
     assert.equal((await library.search({ query: "Synthetic" })).length, 1);
-    const first = outcome.storage.batch.items[0];
-    const sourceItem = outcome.batch.items[0];
-    assert.ok(first && sourceItem);
+    const first = outcome.batch.items[0];
+    assert.ok(first);
+    const sourceItem = { ...first };
+    delete sourceItem.itemId;
+    delete sourceItem.versionId;
     const revised = await library.save({
       batch: {
         ...outcome.batch,
@@ -56,7 +59,7 @@ export default async function () {
     const reopened = openContentLibrary({ root: registry.root });
     assert.equal(reopened.apiVersion, 2);
     assert.equal(
-      (await reopened.latest("sample"))?.items[0]?.versionId,
+      (await reopened.latest(outcome.sourceId))?.items[0]?.versionId,
       revised.items[0]?.versionId,
     );
     assert.equal(await reopened.remove(first.itemId), true);
@@ -75,6 +78,6 @@ export default async function () {
     assert.equal(extracted.contentKind, "extracted-article");
     assert.match(extracted.text, /Synthetic article content/);
   } finally {
-    await Promise.allSettled([registry.close(), library.close()]);
+    await library.close();
   }
 }

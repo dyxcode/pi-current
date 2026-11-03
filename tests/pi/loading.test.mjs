@@ -58,28 +58,46 @@ test("Pi discovers the package from another directory and reloads it without dup
       `${phase}: search and read tools must each be registered once`,
     );
     const tools = extensions[0].tools;
-    for (const [name, field, values, base] of [
-      ["current_web_read", "access", ["http", "browser"], { url: "https://example.com/article" }],
-      ["current_sources", "action", ["list", "login", "check"], {}],
-    ]) {
-      const tool = tools.get(name).definition;
-      // Provider-facing input enums must avoid anyOf/const encodings.
-      const schema = JSON.parse(JSON.stringify(tool.parameters.properties[field]));
-      assert.equal(schema.type, "string", `${phase}: ${name}.${field} must be a string enum`);
-      assert.deepEqual(schema.enum, values);
-      assert.equal(schema.anyOf, undefined);
-      for (const value of values) {
-        const args = { ...base, [field]: value };
-        assert.deepEqual(validateToolArguments(tool, { id: "enum", name, arguments: args }), args);
-      }
-      assert.throws(() =>
-        validateToolArguments(tool, {
-          id: "invalid-enum",
-          name,
-          arguments: { ...base, [field]: "invalid" },
-        }),
-      );
-    }
+    assert.deepEqual(
+      [...tools.keys()].sort(),
+      [
+        "current_library_read",
+        "current_library_remove",
+        "current_library_search",
+        "current_source_import",
+        "current_sources",
+        "current_web_read",
+        "current_web_search",
+      ],
+      `${phase}: Pi exposes only the simplified source, library and public web tools`,
+    );
+    const read = tools.get("current_web_read").definition;
+    assert.deepEqual(
+      Object.keys(read.parameters.properties).sort(),
+      ["maxCharacters", "url"],
+      `${phase}: public page reading has no source or browser routing`,
+    );
+    const importTool = tools.get("current_source_import").definition;
+    assert.deepEqual(importTool.prepareArguments({ url: "https://example.com/feed.xml" }), {
+      url: "https://example.com/feed.xml",
+      limit: 5,
+      module: "feed",
+    });
+    assert.deepEqual(
+      validateToolArguments(importTool, {
+        id: "import-defaults",
+        name: "current_source_import",
+        arguments: importTool.prepareArguments({ url: "https://example.com/feed.xml" }),
+      }),
+      { url: "https://example.com/feed.xml", limit: 5, module: "feed" },
+    );
+    assert.match(importTool.promptGuidelines.join(" "), /direct user request/i);
+    for (const obsolete of [
+      "current_source_operation",
+      "current_source_save",
+      "current_feed_collect",
+    ])
+      assert.equal(tools.has(obsolete), false, `${phase}: ${obsolete} is not registered`);
   }
 
   assert.deepEqual(loadTimeRequests, [], "startup and reload must not make network requests");

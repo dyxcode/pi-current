@@ -6,7 +6,10 @@ test("Pi exposes public-page reading with a separate input and output contract",
   const { tool } = await createSearchHarness(t, "current_web_read");
   assert.equal(tool.name, "current_web_read");
   assert.ok(tool.parameters.properties.url);
-  assert.ok(tool.outputSchema.anyOf[0].properties.finalUrl);
+  assert.ok(tool.outputSchema.properties.finalUrl);
+  assert.throws(() =>
+    tool.prepareArguments({ url: "https://example.com/article", access: "browser" }),
+  );
   assert.deepEqual(tool.prepareArguments({ url: " https://example.com/article#section " }), {
     url: "https://example.com/article",
     maxCharacters: 20_000,

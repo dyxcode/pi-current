@@ -2,48 +2,52 @@
 
 [English](../../README.md) | 简体中文
 
-**搜索网页，追随兴趣。**
+**搜索网络，关注你的兴趣。**
 
-pi-current 是一个 [Pi](https://github.com/earendil-works/pi) 扩展，通过对话提供网页搜索、来源登录、文章获取和本地内容库浏览。
+pi-current 是一个 [Pi](https://github.com/earendil-works/pi) 扩展，通过对话搜索公开网页、导入 RSS/Atom，并阅读本地文章库。
 
 ## 搜索与阅读
 
-直接让 Pi 搜索话题、读取 URL，或打开搜索结果：
+让 Pi 搜索主题、读取 URL，或打开搜索结果：
 
 - “搜索最近关于 local-first software 的文章。”
-- “读取第二条结果，解释它的主要论点。”
+- “阅读第二条结果，解释它的主要观点。”
 
-搜索结果附有来源链接。公开页面读取支持 HTML、纯文本和 Markdown。
+搜索结果附带来源链接。公开网页阅读支持 HTML、纯文本和 Markdown。
 
-## 连接来源
+## 导入订阅源
 
-Source Plugin 将 pi-current 连接到需要登录或使用专门方式获取文章的网站。每个插件提供对应来源支持的操作。
+向 Pi 提供 RSS 2.0 或 Atom 1.0 feed URL：
 
-1. 在 Pi 中打开 `/sources`，选择 **Add source**。
-2. 输入本地 `.mjs`、`.js` 或 `.ts` 插件文件的绝对路径。
-3. 选择来源，使用 **Set up access…** 配置访问方式。如果提供多种方式，再选择其中一种。
-4. 使用 **View status** 一次查看所有连接已记录的状态和上次检查时间。如果插件支持检查访问状态，可在聊天中明确请求检查连接。
-5. 在聊天中请求单篇文章或一批内容。
+- “从 https://example.org/feed.xml 导入 5 条内容。”
 
-请求中使用已注册的来源 ID 或显示名称。以注册 ID 为 `sample` 的来源为例：
+内置 feed module 获取订阅源并将条目保存到本地 library，保留来源提供的文章文本、摘要和链接。只有摘要的条目仍标为摘要，不会自动访问链接补全正文。重复导入同一 feed 会复用已有条目，并保留内容变化的版本。
 
-| 请求 | 功能 |
-| --- | --- |
-| `Log in to sample` | 打开来源的登录流程 |
-| `Check sample connection` | 检查当前连接 |
-| `Read https://example.com/article from sample` | 获取单篇文章 |
-| `Collect 3 items from sample` | 获取并保存一批内容 |
+导入结果会说明保存数量和条目问题，包括跳过的内容。Feed 内容由发布者提供，导入并不代表它与网站上的完整文章一致。
 
-`/sources` 还可以启用、禁用或移除来源。
+## 阅读本地文章库
 
-注册 [`examples/source-plugin.mjs`](../../examples/source-plugin.mjs)，可以用示例文章体验来源管理和内容库。
+让 Pi 搜索已保存内容或打开文章：
 
-## 浏览已保存内容
+- “在我的 library 中搜索城市设计。”
+- “打开那篇已保存的文章。”
 
-采集的文章保存在本地内容库中。明确请求保存时，会保留获取到的完整正文。让 Pi 展示已保存条目、搜索内容库，或打开一篇已保存文章即可。来源卡片显示标题，以及最多 200 个字符的来源摘要或正文预览。
+搜索结果显示简短的本地预览。在交互式 Pi 中打开文章后，可以在本地阅读器中滚动阅读保存的文本。只有摘要的条目显示摘要和原文链接。正文不进入模型可见的工具结果，阅读器用于你直接阅读。没有交互式 UI 时，Pi 返回已保存条目的引用，不会打开阅读器。
 
-内容库搜索也能找到已禁用或移除来源的历史文章。删除条目时，使用 `Delete saved item ITEM_ID`。
+Library 搜索和阅读支持离线使用。删除条目时，明确指定 `Delete saved item ITEM_ID`。移除 source module 会保留已保存文章。
+
+## 添加 source module
+
+RSS/Atom module 已内置，其他 modules 使用相同的获取与导入流程：
+
+1. 在 Pi 中打开 `/sources`，选择 **Add module**。
+2. 输入可信 `.mjs`、`.js` 或 `.ts` module 的绝对路径。
+3. 请求导入 URL，并指定 module ID。
+
+如需使用无需联网的示例，注册 [`examples/source-plugin.mjs`](../../examples/source-plugin.mjs)，然后请求：“使用 sample，从 https://example.org/feed.xml 导入 2 条内容。”
+
+`/sources` 也可列出 modules、移除外部注册。原来使用 login/check、`create` 或 named operations 的 plugins，需要更新为 fetch 接口后再注册。
 
 ## 后续方向
 
-长远方向是通过本地内容库以及兴趣与阅读信号，连接实时搜索和内容推荐。基于模型的私有文章推荐列入后续计划。
+持久化 subscriptions、定时刷新和推荐属于后续计划。目前的导入流程在明确请求时运行。

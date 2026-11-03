@@ -1,42 +1,32 @@
-// A trusted local source plugin. This example uses synthetic content and no network.
+// A source module returns content; pi-current assigns identity and saves the import.
+// This example uses synthetic content and performs no network requests.
 export default {
-  apiVersion: 1,
   id: "sample",
   name: "Sample source",
-  hosts: ["example.com"],
-  capabilities: { login: false, check: true, read: true, collect: true },
-  async create({ sourceId }) {
-    const item = (url) => ({
-      sourceId,
-      externalId: "sample-article",
-      url,
-      title: "A sample article",
-      text: "This is synthetic content for trying the source interface.",
-      retrievedAt: new Date().toISOString(),
-      sourceCompleteness: "unknown",
-      truncated: false,
-    });
-    const cancelled = (signal) => {
-      if (signal.aborted) throw new Error("CANCELLED");
-    };
+  async fetch({ url, limit }, { signal }) {
+    signal.throwIfAborted();
+    const now = new Date().toISOString();
     return {
-      async check(signal) {
-        cancelled(signal);
-        return "not-required";
-      },
-      async read(url, _maxCharacters, signal) {
-        cancelled(signal);
-        return item(url);
-      },
-      async collect(_limit, signal) {
-        cancelled(signal);
-        return {
-          items: [item("https://example.com/article")],
-          failures: [],
-          stopReason: "complete",
-        };
-      },
-      async close() {},
+      items: [
+        {
+          externalId: "sample-article",
+          url: new URL("/article", url).href,
+          title: "A synthetic article",
+          text: "This is synthetic content for trying the source interface.",
+          discoveredAt: now,
+          retrievedAt: now,
+          sourceCompleteness: "unknown",
+          truncated: false,
+        },
+        {
+          externalId: "sample-candidate",
+          url: new URL("/candidate", url).href,
+          title: "A synthetic candidate",
+          summary: "This entry supplies a summary and link without an article body.",
+          discoveredAt: now,
+        },
+      ].slice(0, limit),
+      issues: [],
     };
   },
 };

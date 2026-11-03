@@ -17,6 +17,7 @@ export type DownloadedPage = {
 };
 type HttpReply = { status: number; headers: IncomingHttpHeaders; bytes: Buffer };
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+export type PageRequestProfile = "page" | "feed";
 
 function publicAddress(address: string): boolean {
   if (!isIP(address)) return false;
@@ -81,6 +82,7 @@ export function requestPage(
   url: URL,
   address: LookupAddress,
   signal: AbortSignal,
+  profile: PageRequestProfile = "page",
 ): Promise<HttpReply> {
   if (signal.aborted) return Promise.reject(abortFailure(signal));
   return new Promise((resolve, reject) => {
@@ -114,7 +116,10 @@ export function requestPage(
           family: address.family,
           signal,
           headers: {
-            accept: "text/html, text/plain, text/markdown;q=0.9",
+            accept:
+              profile === "feed"
+                ? "application/rss+xml, application/atom+xml, application/xml, text/xml, application/rdf+xml, text/html;q=0.9, text/plain;q=0.8, text/markdown;q=0.7"
+                : "text/html, text/plain, text/markdown;q=0.9",
             "accept-encoding": "gzip, deflate, br",
             "user-agent": "pi-current/0.0.0",
           },
@@ -141,11 +146,24 @@ export function requestPage(
             return;
           }
           const mime = incoming.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
-          if (!mime || !["text/html", "text/plain", "text/markdown"].includes(mime)) {
+          const pageMimes = ["text/html", "text/plain", "text/markdown"];
+          const feedMimes = [
+            ...pageMimes,
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/xml",
+            "text/xml",
+            "application/rdf+xml",
+            "application/xhtml+xml",
+          ];
+          const supported = profile === "feed" ? feedMimes : pageMimes;
+          if (!mime || !supported.includes(mime)) {
             finish(
               new ReadError(
                 "UNSUPPORTED_CONTENT",
-                "Only HTML, plain text and Markdown pages are supported.",
+                profile === "feed"
+                  ? "The response is not a supported RSS or Atom feed content type."
+                  : "Only HTML, plain text and Markdown pages are supported.",
               ),
             );
             return;
@@ -234,7 +252,11 @@ export function requestPage(
   });
 }
 
-export async function fetchPublicPage(input: string, signal: AbortSignal): Promise<DownloadedPage> {
+export async function fetchPublicPage(
+  input: string,
+  signal: AbortSignal,
+  profile: PageRequestProfile = "page",
+): Promise<DownloadedPage> {
   let url = new URL(input);
   const visited = new Set<string>();
   for (let hop = 0; hop <= 5; hop++) {
@@ -244,7 +266,7 @@ export async function fetchPublicPage(input: string, signal: AbortSignal): Promi
       throw new ReadError("REDIRECT_ERROR", "The website returned a redirect loop.");
     visited.add(url.href);
     const address = await resolvePublic(url, signal);
-    const reply = await requestPage(url, address, signal);
+    const reply = await requestPage(url, address, signal, profile);
     if (!REDIRECTS.has(reply.status)) {
       return {
         bytes: reply.bytes,

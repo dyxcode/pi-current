@@ -4,7 +4,7 @@ English | [简体中文](docs/i18n/README.zh-CN.md)
 
 **Search the web. Follow your interests.**
 
-pi-current is a [Pi](https://github.com/earendil-works/pi) extension for searching the web, logging in to sources, retrieving articles, and browsing a local content library through conversation.
+pi-current is a [Pi](https://github.com/earendil-works/pi) extension for public web search, RSS/Atom imports, and reading a local article library through conversation.
 
 ## Search and read
 
@@ -15,35 +15,39 @@ Ask Pi to search a topic, read a URL, or open a search result:
 
 Search results include source links. Public page reading supports HTML, plain text, and Markdown.
 
-## Connect a source
+## Import a feed
 
-Source Plugins connect pi-current to sites that need login or their own article retrieval method. Each plugin provides the operations its source supports.
+Give Pi an RSS 2.0 or Atom 1.0 feed URL:
 
-1. Open `/sources` in Pi and select **Add source**.
-2. Enter the absolute path to your local `.mjs`, `.js`, or `.ts` plugin.
-3. Select the source and use **Set up access…** to configure access. If it offers several methods, choose one.
-4. Use **View status** to see all cached connection states and their last check times. If the plugin supports checking access, request a connection check in chat.
-5. Request an article or a batch in chat.
+- “Import 5 items from https://example.org/feed.xml.”
 
-Use the registered source ID or display name in your request. For a source registered as `sample`:
+The built-in feed module fetches the feed and saves its entries to your library. It preserves feed-provided article text, summaries, and links. Summary-only entries remain marked as summaries; linked articles are not fetched automatically. Reimporting the same feed reuses existing items and retains changed versions.
 
-| Request | Function |
-| --- | --- |
-| `Log in to sample` | Open the source's login flow |
-| `Check sample connection` | Check its current connection |
-| `Read https://example.com/article from sample` | Retrieve one article |
-| `Collect 3 items from sample` | Retrieve and save a batch |
+The import result reports saved items and entry issues, including any skipped content. Feed content comes from its publisher; importing it does not establish that it matches the full article on the website.
 
-`/sources` also lets you enable, disable, or remove a source.
+## Read your library
 
-To try source management and the library with sample articles, register [`examples/source-plugin.mjs`](examples/source-plugin.mjs).
+Ask Pi to search saved items or open a saved article:
 
-## Browse saved content
+- “Search my library for urban design.”
+- “Open that saved article.”
 
-Collected articles are saved in a local library. Requested saves retain the retrieved article body. Ask Pi to show saved items, search the library, or open a saved article. Source cards show the title and up to 200 characters of a supplied summary or body preview.
+Search results show short local previews. Opening an article in interactive Pi displays the saved text in a scrollable local reader. Summary-only entries show their summary and original link. Saved text stays out of model-visible tool results; the reader is for you. Without an interactive UI, Pi returns the saved reference instead of opening the reader.
 
-Library search can find saved articles from disabled or removed sources. To delete an item, use `Delete saved item ITEM_ID`.
+Library search and reading work offline. To delete an item, ask `Delete saved item ITEM_ID`. Removing a source module preserves saved articles.
+
+## Add a source module
+
+The RSS/Atom module is built in. Additional modules provide the same fetch-and-import workflow:
+
+1. Open `/sources` in Pi and select **Add module**.
+2. Enter the absolute path to a trusted `.mjs`, `.js`, or `.ts` module.
+3. Ask Pi to import a URL with that module's ID.
+
+For a network-free example, register [`examples/source-plugin.mjs`](examples/source-plugin.mjs), then ask: “Import 2 items from https://example.org/feed.xml using sample.”
+
+`/sources` also lists modules and removes external registrations. Earlier plugins using login/check, `create`, or named operations need updating to the fetch interface before registration.
 
 ## Direction
 
-The long-term direction is to connect live search and recommendations through the local library and interest and reading signals. Model-based recommendations for private articles are planned.
+Persistent subscriptions, scheduled refresh, and recommendations are planned. The current import workflow runs when requested.
