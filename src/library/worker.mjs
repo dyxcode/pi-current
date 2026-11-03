@@ -96,12 +96,16 @@ function batch(db, runId) {
     .prepare(`SELECT v.payload, o.* FROM collection_items o JOIN item_versions v ON v.id=o.version_id
     WHERE o.run_id=? ORDER BY o.position,o.item_id`)
     .all(runId)
-    .map((row) => ({
-      ...item(row),
-      discoveredAt: String(row.discovered_at),
-      retrievedAt: String(row.retrieved_at),
-      observedPosition: Number(row.position),
-    }));
+    .map((row) => {
+      const value = item(row);
+      const observation = {
+        discoveredAt: String(row.discovered_at),
+        observedPosition: Number(row.position),
+      };
+      return value.text === undefined
+        ? { ...value, ...observation }
+        : { ...value, ...observation, retrievedAt: String(row.retrieved_at) };
+    });
   return {
     id: runId,
     sourceId: String(run.source),
@@ -131,11 +135,30 @@ function save(db, request) {
     JSON.stringify(b.failures),
     b.stopReason,
   );
-  for (const a of b.items) {
+  for (const input of b.items) {
     const existing = db
-      .prepare("SELECT id FROM items WHERE source=? AND external_id=?")
-      .get(a.sourceId, a.externalId);
+      .prepare(`SELECT i.id,v.payload FROM items i LEFT JOIN item_versions v ON v.id=i.latest_version_id
+        WHERE i.source=? AND i.external_id=?`)
+      .get(input.sourceId, input.externalId);
     const itemId = existing ? String(existing.id) : randomUUID();
+    let a = input;
+    if (existing?.payload) {
+      const prior = JSON.parse(String(existing.payload));
+      answer(prior);
+      if (a.text === undefined && prior.text !== undefined) {
+        a = {
+          ...a,
+          text: prior.text,
+          retrievedAt: prior.retrievedAt,
+          sourceCompleteness: prior.sourceCompleteness,
+          truncated: prior.truncated,
+        };
+      }
+      if (a.summary === undefined && prior.summary !== undefined)
+        a = { ...a, summary: prior.summary };
+    }
+    const observedAt =
+      input.text === undefined ? input.discoveredAt : (input.discoveredAt ?? input.retrievedAt);
     if (!existing)
       db.prepare("INSERT INTO items VALUES (?,?,?,?,?,?,?)").run(
         itemId,
@@ -143,8 +166,8 @@ function save(db, request) {
         a.externalId,
         a.url,
         null,
-        a.discoveredAt ?? a.retrievedAt,
-        a.discoveredAt ?? a.retrievedAt,
+        observedAt,
+        observedAt,
       );
     const versionHash = hash([
       a.url,
@@ -167,17 +190,18 @@ function save(db, request) {
         versionHash,
         JSON.stringify(a),
         a.title,
-        a.text,
+        a.text ?? null,
       );
-      db.prepare("INSERT INTO library_fts(title,body,version_id) VALUES (?,?,?)").run(
+      db.prepare("INSERT INTO library_fts(title,summary,body,version_id) VALUES (?,?,?,?)").run(
         a.title.toLowerCase(),
-        a.text.toLowerCase(),
+        (a.summary ?? "").toLowerCase(),
+        (a.text ?? "").toLowerCase(),
         versionId,
       );
     }
     db.prepare("UPDATE items SET latest_version_id=?,last_seen=?,url=? WHERE id=?").run(
       versionId,
-      a.discoveredAt ?? a.retrievedAt,
+      observedAt,
       a.url,
       itemId,
     );
@@ -185,8 +209,8 @@ function save(db, request) {
       b.id,
       itemId,
       versionId,
-      a.discoveredAt ?? a.retrievedAt,
-      a.retrievedAt,
+      observedAt,
+      a.retrievedAt ?? null,
       a.observedPosition ?? 1,
     );
   }
@@ -199,10 +223,11 @@ function search(db, request) {
   const long = [...query].length >= 3;
   const sql = `SELECT v.payload,v.id AS version_id,i.id AS item_id FROM library_fts f
     JOIN item_versions v ON v.id=f.version_id JOIN items i ON i.latest_version_id=v.id
-    WHERE ${long ? "library_fts MATCH ? AND " : ""}(instr(f.title,?)>0 OR instr(f.body,?)>0) ${request.source ? "AND i.source=?" : ""}
+    WHERE ${long ? "library_fts MATCH ? AND " : ""}(instr(f.title,?)>0 OR instr(f.summary,?)>0 OR instr(f.body,?)>0) ${request.source ? "AND i.source=?" : ""}
     ORDER BY ${long ? "bm25(library_fts)," : ""}i.last_seen DESC,i.id LIMIT ?`;
   const params = [
     ...(long ? [`"${query.replaceAll('"', '""')}"`] : []),
+    query,
     query,
     query,
     ...(request.source ? [request.source] : []),
@@ -213,6 +238,7 @@ function search(db, request) {
     .all(...params)
     .map((row) => {
       const value = item(row);
+      if (value.text === undefined) return value;
       const match = value.text.toLowerCase().indexOf(query);
       const start = Math.max(0, characterOffset(value.text, Math.max(0, match)) - 80);
       const excerpt = characterSlice(value.text, start, 400);
@@ -231,6 +257,7 @@ function read(db, request) {
     .get(...(request.versionId ? [request.itemId, request.versionId] : [request.itemId]));
   if (!row) return undefined;
   const value = item(row);
+  if (value.text === undefined) return value;
   const max = request.maxCharacters ?? 20000;
   const excerpt = characterSlice(value.text, 0, max);
   return { ...value, text: excerpt.text, displayTruncated: excerpt.displayTruncated };
@@ -294,9 +321,20 @@ function execute(workerData) {
         enableForeignKeyConstraints: true,
         allowExtension: false,
       });
-      if (writing) db.exec("PRAGMA synchronous=FULL");
-      db.exec(writing ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
+      const migrating = db.prepare("PRAGMA user_version").get()?.user_version === 1;
+      if (migrating) process.send?.({ phase: "migration" });
+      if (migrating && !writing) {
+        db.close();
+        db = new DatabaseSync(path, {
+          timeout: 1000,
+          enableForeignKeyConstraints: true,
+          allowExtension: false,
+        });
+      }
+      if (writing || migrating) db.exec("PRAGMA synchronous=FULL");
+      db.exec(writing || migrating ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
       const ready = initialize(db, operation === "save");
+      if (migrating) process.send?.({ phase: "operation" });
       if (!ready) result = operation === "search" ? [] : operation === "remove" ? false : undefined;
       else if (operation === "save") {
         saveRequest(request);

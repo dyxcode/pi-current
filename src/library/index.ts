@@ -2,12 +2,12 @@ import { dataRoot } from "../sources/paths.ts";
 import { SQLiteContentLibrary } from "./store.ts";
 import type { ContentLibrary } from "./types.js";
 
-export const contentLibraryApiVersion = 1 as const;
+export const contentLibraryApiVersion = 2 as const;
 
-export type ContentLibraryApiV1 = ContentLibrary & { readonly apiVersion: 1 };
+export type ContentLibraryApi = ContentLibrary & { readonly apiVersion: 2 };
 export type OpenContentLibraryOptions = { root?: string };
 
-export function openContentLibrary(options: OpenContentLibraryOptions = {}): ContentLibraryApiV1 {
+export function openContentLibrary(options: OpenContentLibraryOptions = {}): ContentLibraryApi {
   return Object.assign(new SQLiteContentLibrary(options.root ?? dataRoot()), {
     apiVersion: contentLibraryApiVersion,
   });
@@ -15,6 +15,8 @@ export function openContentLibrary(options: OpenContentLibraryOptions = {}): Con
 
 export type {
   ContentLibrary,
+  LibraryCandidate,
+  LibraryContent,
   LibraryBatch,
   LibraryItem,
   ReadRequest,

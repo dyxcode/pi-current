@@ -48,7 +48,7 @@ export function id(value) {
   )
     throw new Error("LIBRARY_INVALID");
 }
-/** @param {unknown} value @returns {asserts value is import('../sources/types.ts').SourceItem} */
+/** @param {unknown} value @returns {asserts value is import('./types.ts').LibraryContent} */
 export function answer(value) {
   object(value);
   text(value.sourceId, 64);
@@ -65,16 +65,26 @@ export function answer(value) {
     throw new Error("LIBRARY_INVALID");
   text(value.title, 2000, true);
   if (value.author !== undefined) text(value.author, 1000, true);
-  article(value.text);
+  if (value.text !== undefined) {
+    article(value.text);
+    date(value.retrievedAt);
+    if (
+      !["unknown", "known-partial"].includes(String(value.sourceCompleteness)) ||
+      typeof value.truncated !== "boolean"
+    )
+      throw new Error("LIBRARY_INVALID");
+  } else {
+    date(value.discoveredAt);
+    if (
+      value.retrievedAt !== undefined ||
+      value.sourceCompleteness !== undefined ||
+      value.truncated !== undefined
+    )
+      throw new Error("LIBRARY_INVALID");
+  }
   if (value.summary !== undefined) text(value.summary, MAX_SUMMARY_CHARACTERS, true);
-  date(value.retrievedAt);
   if (value.discoveredAt !== undefined) date(value.discoveredAt);
   if (value.observedPosition !== undefined) integer(value.observedPosition, 10000);
-  if (
-    !["unknown", "known-partial"].includes(String(value.sourceCompleteness)) ||
-    typeof value.truncated !== "boolean"
-  )
-    throw new Error("LIBRARY_INVALID");
   if (
     Object.keys(value).some(
       (k) =>
@@ -135,7 +145,7 @@ export function saveRequest(value) {
     if (ids.has(item.externalId) || item.sourceId !== batch.sourceId)
       throw new Error("LIBRARY_INVALID");
     ids.add(item.externalId);
-    size += Buffer.byteLength(item.text, "utf8");
+    size += Buffer.byteLength(item.text ?? "", "utf8");
     if (size > MAX_BATCH_BYTES) throw new Error("LIBRARY_INVALID");
   }
   for (const failure of batch.failures) {

@@ -19,20 +19,59 @@ import { openContentLibrary } from "pi-current/library";
 const root = await mkdtemp(join(tmpdir(), "pi-current-library-node-only-"));
 const library = openContentLibrary({ root });
 const collectedAt = "2026-11-03T00:00:00.000Z";
-const sourceItem = {
+const candidate = {
   sourceId: "sample",
   externalId: "one",
   url: "https://example.com/a",
   title: "Sample",
-  text: "Original synthetic body",
-  retrievedAt: collectedAt,
-  sourceCompleteness: "unknown",
-  truncated: false,
+  summary: "Synthetic discovery summary",
+  discoveredAt: collectedAt,
 };
 try {
-  assert.equal(library.apiVersion, 1);
-  assert.deepEqual(await library.search({ query: "synthetic" }), []);
+  assert.equal(library.apiVersion, 2);
   const first = await library.save({
+    batch: {
+      id: randomUUID(),
+      sourceId: "sample",
+      collectedAt,
+      items: [candidate],
+      failures: [],
+      stopReason: "complete",
+    },
+    requestedCount: 1,
+    startedAt: collectedAt,
+  });
+  const firstItem = first.items[0];
+  assert.ok(firstItem);
+  assert.equal("text" in firstItem, false);
+  assert.equal("retrievedAt" in firstItem, false);
+  assert.equal("sourceCompleteness" in firstItem, false);
+  assert.equal("truncated" in firstItem, false);
+  await library.close();
+
+  const reopened = openContentLibrary({ root });
+  assert.equal(reopened.apiVersion, 2);
+  const discovered = await reopened.search({ query: "discovery summary" });
+  assert.equal(discovered.length, 1);
+  assert.equal(discovered[0]?.itemId, firstItem.itemId);
+  assert.equal(discovered[0]?.versionId, firstItem.versionId);
+  const historicalCandidate = await reopened.read({
+    itemId: firstItem.itemId,
+    versionId: firstItem.versionId,
+  });
+  assert.ok(historicalCandidate);
+  assert.equal(historicalCandidate.discoveredAt, candidate.discoveredAt);
+  assert.equal("text" in historicalCandidate, false);
+
+  const sourceItem = {
+    ...candidate,
+    text: "Enriched synthetic body",
+    retrievedAt: collectedAt,
+    sourceCompleteness: "unknown",
+    truncated: false,
+  };
+
+  const revised = await reopened.save({
     batch: {
       id: randomUUID(),
       sourceId: "sample",
@@ -44,27 +83,29 @@ try {
     requestedCount: 1,
     startedAt: collectedAt,
   });
-  const firstItem = first.items[0];
-  assert.ok(firstItem);
-
-  const revised = await library.save({
-    batch: {
-      id: randomUUID(),
-      sourceId: "sample",
-      collectedAt,
-      items: [{ ...sourceItem, text: "Updated synthetic body" }],
-      failures: [],
-      stopReason: "complete",
-    },
-    requestedCount: 1,
-    startedAt: collectedAt,
-  });
   assert.equal(revised.items[0]?.itemId, firstItem.itemId);
   assert.notEqual(revised.items[0]?.versionId, firstItem.versionId);
   assert.equal(
-    (await library.read({ itemId: firstItem.itemId, versionId: firstItem.versionId }))?.text,
+    (await reopened.read({ itemId: firstItem.itemId, versionId: firstItem.versionId }))?.discoveredAt,
+    candidate.discoveredAt,
+  );
+  assert.equal(
+    (await reopened.read({ itemId: firstItem.itemId }))?.text,
     sourceItem.text,
   );
+  await reopened.close();
+
+  const finalLibrary = openContentLibrary({ root });
+  try {
+    const latest = await finalLibrary.read({ itemId: firstItem.itemId });
+    const history = await finalLibrary.read({ itemId: firstItem.itemId, versionId: firstItem.versionId });
+    assert.equal(latest?.versionId, revised.items[0]?.versionId);
+    assert.equal(latest?.text, sourceItem.text);
+    assert.equal(history?.discoveredAt, candidate.discoveredAt);
+    assert.equal("text" in (history ?? {}), false);
+  } finally {
+    await finalLibrary.close();
+  }
 } finally {
   await library.close();
   await rm(root, { recursive: true, force: true });

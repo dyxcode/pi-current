@@ -1,18 +1,18 @@
+import { collectAndSave } from "__PACKAGE_ROOT__/src/sources/collection.ts";
+import { SourceRegistry } from "__PACKAGE_ROOT__/src/sources/registry.ts";
+import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SourceRegistry } from "__PACKAGE_ROOT__/src/sources/registry.ts";
 import { openContentLibrary } from "pi-current/library";
-import { collectAndSave } from "__PACKAGE_ROOT__/src/sources/collection.ts";
-import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 
 export default async function () {
   const root = dirname(fileURLToPath(import.meta.url));
   const registry = new SourceRegistry({ root: join(root, "runtime") });
   const library = openContentLibrary({ root: registry.root });
   try {
-    assert.equal(library.apiVersion, 1);
+    assert.equal(library.apiVersion, 2);
     await registry.register(join(root, "external-plugins/sample.mjs"));
     await registry.register(join(root, "external-plugins/sample.ts"));
     assert.equal(
@@ -54,7 +54,7 @@ export default async function () {
     await library.close();
     await assert.rejects(library.search({ query: "Synthetic" }), /LIBRARY_CLOSED/);
     const reopened = openContentLibrary({ root: registry.root });
-    assert.equal(reopened.apiVersion, 1);
+    assert.equal(reopened.apiVersion, 2);
     assert.equal(
       (await reopened.latest("sample"))?.items[0]?.versionId,
       revised.items[0]?.versionId,

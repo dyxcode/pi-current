@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,10 +50,10 @@ try {
   const installed = join(root, "node_modules", "pi-current");
   await writeFile(
     join(root, "library-consumer.mts"),
-    `import { openContentLibrary, type SourceItem } from "pi-current/library";
+    `import { openContentLibrary, type LibraryCandidate, type LibraryContent, type SourceItem } from "pi-current/library";
 const library = openContentLibrary({ root: "/tmp/pi-current-library-types" });
-const version: 1 = library.apiVersion;
-const item: SourceItem = {
+const version: 2 = library.apiVersion;
+const body: SourceItem = {
   sourceId: "sample",
   externalId: "one",
   url: "https://example.com/a",
@@ -63,7 +63,30 @@ const item: SourceItem = {
   sourceCompleteness: "unknown",
   truncated: false,
 };
-void [version, item];
+const candidate: LibraryCandidate = {
+  sourceId: "sample",
+  externalId: "candidate-1",
+  url: "https://example.com/candidate",
+  title: "Candidate",
+  summary: "Synthetic candidate summary",
+  discoveredAt: "2026-01-01T00:00:00.000Z",
+};
+const content: LibraryContent = candidate;
+function inspect(value: LibraryContent) {
+  if (typeof value.text === "string") {
+    const text: string = value.text;
+    const retrievedAt: string = value.retrievedAt;
+    const completeness: "unknown" | "known-partial" = value.sourceCompleteness;
+    const truncated: boolean = value.truncated;
+    void [text, retrievedAt, completeness, truncated];
+  } else {
+    const discoveredAt: string = value.discoveredAt;
+    void discoveredAt;
+  }
+}
+// @ts-expect-error Candidate records do not satisfy the body-only source contract.
+const candidateAsSource: SourceItem = candidate;
+void [version, body, content, inspect, candidateAsSource];
 `,
   );
   const typeProject = join(root, "tsconfig.library-consumer.json");

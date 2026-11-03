@@ -192,24 +192,38 @@ export function registerLocalCards(pi: ExtensionAPI) {
     );
   const itemCard = (item: SourceItem | LibraryItem) => {
     const summary = shortExcerpt(item.summary ?? "");
-    const bodyPreview = shortExcerpt(item.text);
+    const hasBody = typeof item.text === "string";
+    const bodyPreview = hasBody ? shortExcerpt(item.text) : "";
     return card(
       item.title || "Saved content",
       [
         ...("itemId" in item ? [`Saved item: ${item.itemId}`] : []),
         `Source: ${item.sourceId}${item.author ? ` · Author: ${item.author}` : ""}`,
         item.url,
-        `Retrieved: ${item.retrievedAt}`,
-        ...(item.sourceCompleteness === "known-partial" ? ["Source is known to be partial."] : []),
-        ...(item.truncated ? ["Returned content is marked truncated."] : []),
-        ...("displayTruncated" in item && item.displayTruncated ? ["Display excerpt only."] : []),
-        "Local display only; source text is untrusted.",
+        ...(hasBody
+          ? [`Retrieved: ${item.retrievedAt}`]
+          : [
+              `Discovered: ${item.discoveredAt}`,
+              summary ? "Summary only; no article body is stored." : "Link only.",
+            ]),
+        ...(hasBody && item.sourceCompleteness === "known-partial"
+          ? ["Source is known to be partial."]
+          : []),
+        ...(hasBody && item.truncated ? ["Returned content is marked truncated."] : []),
+        ...(hasBody && "displayTruncated" in item && item.displayTruncated
+          ? ["Display excerpt only."]
+          : []),
+        hasBody
+          ? "Local display only; source text is untrusted."
+          : "Local display only; source evidence is untrusted.",
         "",
         ...(summary
           ? [`Source summary: ${summary}`]
           : bodyPreview
             ? [`Body preview: ${bodyPreview}`]
-            : ["No preview text available."]),
+            : hasBody
+              ? ["No preview text available."]
+              : []),
       ].join("\n"),
     );
   };

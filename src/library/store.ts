@@ -71,19 +71,31 @@ export class SQLiteContentLibrary implements ContentLibrary {
             const writing = operation === "save" || operation === "remove";
             abort = () => fail(writing ? "LIBRARY_WRITE_UNCERTAIN" : "LIBRARY_CANCELLED");
             signal?.addEventListener("abort", abort, { once: true });
-            timer = setTimeout(
-              () => fail(writing ? "LIBRARY_WRITE_UNCERTAIN" : "LIBRARY_TIMEOUT"),
-              5000,
+            const startDeadline = () =>
+              setTimeout(() => fail(writing ? "LIBRARY_WRITE_UNCERTAIN" : "LIBRARY_TIMEOUT"), 5000);
+            timer = startDeadline();
+            worker.on(
+              "message",
+              (message: {
+                phase?: "migration" | "operation";
+                ok?: boolean;
+                result?: T;
+                code?: string;
+              }) => {
+                if (message?.phase) {
+                  clearTimeout(timer);
+                  // A one-time schema/index rebuild scales with retained history.
+                  // Caller cancellation remains armed throughout the migration.
+                  timer = message.phase === "operation" ? startDeadline() : undefined;
+                } else if (message?.ok === true) resolve(message.result as T);
+                else
+                  fail(
+                    typeof message?.code === "string" && /^LIBRARY_[A-Z_]+$/.test(message.code)
+                      ? message.code
+                      : "LIBRARY_STORAGE_ERROR",
+                  );
+              },
             );
-            worker.once("message", (message: { ok?: boolean; result?: T; code?: string }) => {
-              if (message?.ok === true) resolve(message.result as T);
-              else
-                fail(
-                  typeof message?.code === "string" && /^LIBRARY_[A-Z_]+$/.test(message.code)
-                    ? message.code
-                    : "LIBRARY_STORAGE_ERROR",
-                );
-            });
             worker.once("error", () =>
               fail(writing ? "LIBRARY_WRITE_UNCERTAIN" : "LIBRARY_STORAGE_ERROR"),
             );
@@ -96,6 +108,7 @@ export class SQLiteContentLibrary implements ContentLibrary {
             if (signal?.aborted) abort();
           });
         } finally {
+          worker.removeAllListeners("message");
           clearTimeout(timer);
           if (abort) signal?.removeEventListener("abort", abort);
           if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
