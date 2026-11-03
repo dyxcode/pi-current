@@ -30,14 +30,8 @@ export type Batch = SourceBatch & {
   collectedAt: string;
 };
 
-/** An acquisition module returns content; the import workflow assigns its source identity. */
+/** Feed parsing returns content; the import workflow assigns its source identity. */
 export type SourceEntry = Omit<SourceItem, "sourceId"> | Omit<LibraryCandidate, "sourceId">;
 export type SourceInput = { url: string; limit: number };
 export type SourceIssue = { index: number; message: string };
 export type SourceFetchResult = { items: SourceEntry[]; issues: SourceIssue[] };
-export interface SourceModule {
-  id: string;
-  name: string;
-  fetch(input: SourceInput, context: { signal: AbortSignal }): Promise<SourceFetchResult>;
-}
-export type SourceRegistration = { id: string; name: string; modulePath?: string };

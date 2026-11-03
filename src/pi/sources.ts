@@ -1,12 +1,10 @@
-import { isAbsolute } from "node:path";
-import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { SQLiteContentLibrary } from "../library/store.ts";
 import type { ContentLibrary, LibraryItem } from "../library/types.ts";
 import { MAX_ARTICLE_BYTES } from "../sources/content-limits.mjs";
-import { importSource } from "../sources/import.ts";
+import { importFeed } from "../sources/import.ts";
 import { dataRoot } from "../sources/paths.ts";
-import { SourceRegistry } from "../sources/registry.ts";
 import type { SourceIssue } from "../sources/types.ts";
 import { localResultSchema, receipt, registerLocalCards, cleanDisplayText } from "./cards.ts";
 import { openLocalReader } from "./reader.ts";
@@ -17,67 +15,18 @@ const itemIdSchema = Type.String({
 const sourceIdSchema = Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}$" });
 const importArgumentsSchema = Type.Object(
   {
-    url: Type.String({ minLength: 1, maxLength: 8192 }),
-    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, default: 5 })),
-    module: Type.Optional(Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}$", default: "feed" })),
-  },
-  { additionalProperties: false },
-);
-
-const sourcesResultSchema = Type.Object(
-  {
-    sources: Type.Array(
-      Type.Object(
-        {
-          id: Type.String(),
-          name: Type.String(),
-          kind: StringEnum(["built-in", "external"] as const),
-        },
-        { additionalProperties: false },
-      ),
+    url: Type.String({ description: "RSS or Atom feed URL for the current task." }),
+    limit: Type.Optional(
+      Type.Integer({ description: "Maximum entries to save, from 1 to 10. Defaults to 5." }),
     ),
   },
   { additionalProperties: false },
 );
 
-type ImportArguments = { url: string; limit: number; module: string };
 type Operation = { controller: AbortController; signal: AbortSignal };
 
-function record(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function validateImportArguments(value: unknown): ImportArguments {
-  if (!record(value) || Object.keys(value).some((key) => !["url", "limit", "module"].includes(key)))
-    throw new Error("Invalid source import arguments.");
-  const url = value.url;
-  const limit = value.limit ?? 5;
-  const module = value.module ?? "feed";
-  if (
-    typeof url !== "string" ||
-    !url.trim() ||
-    url.length > 8192 ||
-    typeof limit !== "number" ||
-    !Number.isInteger(limit) ||
-    limit < 1 ||
-    limit > 10 ||
-    typeof module !== "string" ||
-    !/^[a-z][a-z0-9-]{0,63}$/.test(module)
-  ) {
-    throw new Error("Provide an HTTP(S) URL, a registered module, and a limit from 1 to 10.");
-  }
-  return { url: url.trim(), limit, module };
-}
-
 function localIssueLines(issues: SourceIssue[]) {
-  return issues.slice(0, 20).map(({ index, message }) => {
-    const excerpt = Array.from(cleanDisplayText(message)).slice(0, 200).join("");
-    return `Entry ${index}: ${excerpt}`;
-  });
-}
-
-function issueIndexesFor(issues: SourceIssue[]) {
-  return issues.slice(0, 20).map(({ index }) => index);
+  return issues.slice(0, 20).map(({ index, message }) => `Entry ${index}: ${message}`);
 }
 
 function savedReferences(items: LibraryItem[]) {
@@ -86,10 +35,9 @@ function savedReferences(items: LibraryItem[]) {
 
 export function registerSources(
   pi: ExtensionAPI,
-  options: { root?: string; registry?: SourceRegistry; library?: ContentLibrary } = {},
+  options: { root?: string; library?: ContentLibrary } = {},
 ): void {
   const root = options.root ?? dataRoot();
-  const registry = options.registry ?? new SourceRegistry({ root });
   const library = options.library ?? new SQLiteContentLibrary(root);
   const { card, itemCard } = registerLocalCards(pi);
   let sessionController = new AbortController();
@@ -108,171 +56,62 @@ export function registerSources(
   });
   pi.on("session_shutdown", () => sessionController.abort());
 
-  pi.registerCommand("sources", {
-    description: "List, add, and remove local source modules.",
-    async handler(_args, ctx) {
-      if (!ctx.hasUI) {
-        ctx.ui.notify("/sources requires an interactive Pi UI.", "warning");
-        return;
-      }
-      const run = operation();
-      while (!run.signal.aborted) {
-        try {
-          const rows = await registry.list();
-          current(run);
-          const sourceChoices = rows.map((source) => ({
-            source,
-            label: `${source.name} [${source.id}] · ${source.modulePath === undefined ? "Built-in" : "External"}`,
-          }));
-          const labels = sourceChoices.map(({ label }) => label);
-          const choice = await ctx.ui.select("Sources", [...labels, "Add module", "Back"]);
-          current(run);
-          if (!choice || choice === "Back") return;
-          if (choice === "Add module") {
-            const modulePath = (
-              await ctx.ui.input("Absolute path to a local source module")
-            )?.trim();
-            current(run);
-            if (!modulePath) continue;
-            if (!isAbsolute(modulePath)) {
-              ctx.ui.notify("Source module paths must be absolute.", "warning");
-              continue;
-            }
-            try {
-              await registry.register(modulePath);
-              current(run);
-              ctx.ui.notify("Source module added.", "info");
-            } catch (error) {
-              current(run);
-              ctx.ui.notify(`Could not add source module: ${safeError(error)}`, "error");
-            }
-            continue;
-          }
-
-          const source = sourceChoices.find(({ label }) => label === choice)?.source;
-          if (!source) continue;
-          if (source.modulePath === undefined) {
-            ctx.ui.notify("The built-in feed module is always available.", "info");
-            continue;
-          }
-          const action = await ctx.ui.select(`${source.name} [${source.id}]`, [
-            "Remove module",
-            "Back",
-          ]);
-          current(run);
-          if (action === "Remove module") {
-            await registry.remove(source.id);
-            current(run);
-            ctx.ui.notify("Source module removed. Saved library items were kept.", "info");
-          }
-        } catch (error) {
-          if (run.signal.aborted) return;
-          ctx.ui.notify(`Could not list source modules: ${safeError(error)}`, "error");
-          return;
-        }
-      }
-    },
-  });
-
-  pi.registerTool({
-    name: "current_sources",
-    label: "List local sources",
-    description: "List the built-in feed importer and locally registered source modules.",
-    promptSnippet: "List locally registered content import modules.",
-    promptGuidelines: [
-      "Use this only to inspect source modules; it does not access feeds or fetch content.",
-    ],
-    parameters: Type.Object({}, { additionalProperties: false }),
-    outputSchema: sourcesResultSchema,
-    async execute(_toolCallId, _params, signal) {
-      const run = operation(signal);
-      const rows = await registry.list();
-      current(run);
-      const sources = rows.map((source) => ({
-        id: source.id,
-        name: source.name,
-        kind: source.modulePath === undefined ? "built-in" : "external",
-      }));
-      const result = { sources };
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }],
-        structuredContent: result,
-        details: result,
-      };
-    },
-  });
-
   pi.registerTool({
     name: "current_source_import",
     label: "Import and save feed content",
     description:
-      "Fetch and save readable content from one registered local source module. Article bodies stay in the local library; the result contains references and issue indexes only.",
-    promptSnippet: "Fetch and save requested content from a local source module.",
+      "Fetch and save items from one RSS or Atom feed that serves the user's current task. The agent may choose a relevant feed URL when it helps fulfill the request.",
+    promptSnippet:
+      "Import one RSS or Atom feed to save feed-provided content for the current task.",
     promptGuidelines: [
-      "Use only for a direct user request to import or fetch content from a supplied source URL. Do not use it for recommendations or inferred interests.",
-      "This call fetches and saves once. It does not create a subscription or refresh schedule.",
-      "Article bodies and detailed source issue messages remain local. Report only references and issue indexes; do not claim to have read or summarized the saved body.",
+      "Use when a current user request calls for feed content; choose an RSS or Atom feed URL when that helps fulfill the user's current reading or retrieval task.",
+      "Keep library-only requests offline. This call fetches and saves once; it does not create a subscription or refresh schedule.",
+      "Article bodies remain local. The receipt may include bounded feed-entry issue messages, but never the saved article body.",
     ],
     parameters: importArgumentsSchema,
-    prepareArguments: validateImportArguments,
     outputSchema: localResultSchema,
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx: ExtensionToolContext) {
-      const params = validateImportArguments(rawParams);
       const run = operation(signal);
-      let sourceName = params.module;
-      let imported: Awaited<ReturnType<typeof importSource>>;
+      let imported: Awaited<ReturnType<typeof importFeed>>;
       try {
-        const module = await registry.get(params.module);
-        sourceName = module.name;
-        current(run);
-        imported = await importSource(module, library, params, run.signal);
+        imported = await importFeed(library, rawParams, run.signal);
         current(run);
       } catch (error) {
         current(run);
         const message = safeError(error);
-        if (ctx.hasUI) ctx.ui.notify(`${sourceName} import failed: ${message}`, "error");
-        return receipt(
-          params.module,
-          0,
-          ctx.hasUI
-            ? "Source import failed. See the local error for details."
-            : "Source import failed.",
-          { status: "failed" },
-        );
+        const detail = `Feed import failed: ${message}`;
+        if (ctx.hasUI) ctx.ui.notify(detail, "error");
+        return receipt("feed", 0, detail, { status: "failed" });
       }
       let cardFailure: unknown;
-      for (const item of imported.batch.items) {
-        try {
+      try {
+        for (const item of imported.batch.items) {
           itemCard(item);
-        } catch (error) {
-          cardFailure = error;
-          break;
         }
+        if (imported.issues.length) {
+          card("Source import issues", localIssueLines(imported.issues).join("\n"));
+        }
+      } catch (error) {
+        cardFailure = error;
       }
+      const issues = imported.issues;
+      const hasIssues = issues.length > 0;
+      const count = imported.batch.items.length;
       if (cardFailure !== undefined && ctx.hasUI)
         ctx.ui.notify(
-          `Items were saved, but a local card failed: ${safeError(cardFailure)}`,
+          `Saved ${count} item(s), but a local card could not be shown: ${safeError(cardFailure)}`,
           "warning",
         );
-      const issueIndexes = issueIndexesFor(imported.issues);
-      if (imported.issues.length) {
-        try {
-          card("Source import issues", localIssueLines(imported.issues).join("\n"));
-        } catch (error) {
-          cardFailure ??= error;
-        }
-      }
-      const status = issueIndexes.length ? "partial" : "saved";
       const message =
         cardFailure !== undefined
-          ? `Saved ${imported.batch.items.length} item(s), but a local card could not be shown.`
-          : issueIndexes.length
-            ? `Saved ${imported.batch.items.length} item(s) to the local library. Detailed entry issues are available in a local card.`
-            : `Saved ${imported.batch.items.length} item(s) to the local library.`;
-      return receipt(imported.sourceId, imported.batch.items.length, message, {
-        status,
+          ? `Saved ${count} item(s), but a local card could not be shown: ${safeError(cardFailure)}`
+          : hasIssues
+            ? `Saved ${count} item(s) to the local library. Feed entry issues are included in this receipt and a local card.`
+            : `Saved ${count} item(s) to the local library.`;
+      return receipt(imported.sourceId, count, message, {
+        status: hasIssues ? "partial" : "saved",
         references: savedReferences(imported.batch.items),
-        ...(issueIndexes.length ? { issueIndexes } : {}),
+        ...(hasIssues ? { issues } : {}),
       });
     },
   });
@@ -395,8 +234,8 @@ export function registerSources(
       "Permanently remove one saved item and its stored versions from the local library.",
     promptSnippet: "Remove a saved local item when the user explicitly requests deletion.",
     promptGuidelines: [
-      "Call this only for a direct user request to delete a saved item. Do not delete items as cleanup or to resolve a source-module problem.",
-      "Use an item ID returned by a local library tool; deleting a saved item does not remove its source module.",
+      "Call this only for a direct user request to delete a saved item. Do not delete items as cleanup.",
+      "Use an item ID returned by a local library tool; this removes that saved item and its versions only.",
     ],
     parameters: Type.Object({ itemId: itemIdSchema }, { additionalProperties: false }),
     outputSchema: localResultSchema,

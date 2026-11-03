@@ -23,7 +23,18 @@ export const localResultSchema = Type.Object(
         { maxItems: 20 },
       ),
     ),
-    issueIndexes: Type.Optional(Type.Array(Type.Integer(), { maxItems: 20 })),
+    issues: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            index: Type.Integer({ minimum: 0 }),
+            message: Type.String({ maxLength: 200 }),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 20 },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -46,7 +57,7 @@ function shortExcerpt(text: string): string {
     : `${codepoints.slice(0, PREVIEW_CODEPOINT_LIMIT - 1).join("")}…`;
 }
 
-/** Receipts contain references and status only; local article text is never returned. */
+/** Receipts contain status, references and system diagnostics; article text stays local. */
 export function receipt(
   source: string,
   count: number,
@@ -54,9 +65,13 @@ export function receipt(
   extra: {
     status?: string;
     references?: { itemId: string; versionId: string }[];
-    issueIndexes?: number[];
+    issues?: { index: number; message: string }[];
   } = {},
 ) {
+  const issues = extra.issues?.slice(0, 20).map(({ index, message }) => ({
+    index,
+    message: Array.from(cleanDisplayText(message)).slice(0, 200).join(""),
+  }));
   const result = {
     source,
     modelAccess: "local-display-only" as const,
@@ -64,7 +79,7 @@ export function receipt(
     status: extra.status ?? "complete",
     message,
     ...(extra.references === undefined ? {} : { references: extra.references }),
-    ...(extra.issueIndexes === undefined ? {} : { issueIndexes: extra.issueIndexes }),
+    ...(issues === undefined ? {} : { issues }),
   };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(result) }],

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, cp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { mockPages } from "../helpers/page-harness.mjs";
+import { feedUrl, feedXml } from "./fixtures/feed.mjs";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-test("actual npm artifact loads in Pi and registers external JS and TS plugins without network or private files", async (t) => {
+test("actual npm artifact imports a feed through its installed parser and library without live network", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "current-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const report = JSON.parse(
@@ -28,7 +30,7 @@ test("actual npm artifact loads in Pi and registers external JS and TS plugins w
   for (const f of report.files) {
     assert.match(
       f.path,
-      /^(package.json|README.md|docs\/i18n\/README.zh-CN.md|src\/|dist\/library-api\/|examples\/source-plugin.mjs)/,
+      /^(package.json|README.md|docs\/i18n\/README.zh-CN.md|src\/|dist\/library-api\/)/,
     );
     assert.doesNotMatch(f.path, /\.local|\.agent|cookies|profile|\.sqlite|sources.json/);
   }
@@ -43,38 +45,22 @@ test("actual npm artifact loads in Pi and registers external JS and TS plugins w
     "--strip-components=1",
   ]);
   await symlink(join(repo, "node_modules"), join(installed, "node_modules"), "dir");
-  const plugin = join(root, "external.mjs");
-  await cp(join(installed, "examples/source-plugin.mjs"), plugin);
-  const tsPlugin = join(root, "external.ts");
-  await writeFile(
-    tsPlugin,
-    `import plugin from ${JSON.stringify(plugin)};
-export default {
-  ...plugin,
-  id: "typescript",
-  async fetch(input: {url: string; limit: number}, context: {signal: AbortSignal}) {
-    return plugin.fetch(input, context);
-  },
-};`,
-  );
+  const { requests } = mockPages(t, {
+    response: () => ({ body: feedXml, headers: { "content-type": "application/rss+xml" } }),
+  });
   const data = join(root, "runtime");
-  const entry = join(root, "register.mjs");
+  const entry = join(root, "check-import.mjs");
   await writeFile(
     entry,
-    `import {SourceRegistry} from ${JSON.stringify(join(installed, "src/sources/registry.ts"))};
-import {importSource} from ${JSON.stringify(join(installed, "src/sources/import.ts"))};
+    `import {importFeed} from ${JSON.stringify(join(installed, "src/sources/import.ts"))};
 import {SQLiteContentLibrary} from ${JSON.stringify(join(installed, "src/library/store.ts"))};
 export default async function(){
-  const registry=new SourceRegistry({root:${JSON.stringify(data)}});
-  await registry.register(${JSON.stringify(plugin)});
-  await registry.register(${JSON.stringify(tsPlugin)});
-  const library=new SQLiteContentLibrary(registry.root);
+  const library=new SQLiteContentLibrary(${JSON.stringify(data)});
   try {
-    for(const id of ['sample','typescript']) {
-      const result=await importSource(await registry.get(id),library,{url:'https://example.com/feed.xml',limit:2});
-      if(result.batch.items.length!==2) throw new Error('PACKAGED_IMPORT_FAILED');
-    }
-    if((await library.search({query:'synthetic'})).length!==4)throw new Error('PACKAGED_LIBRARY_FAILED');
+    const result=await importFeed(library,{url:${JSON.stringify(feedUrl)}});
+    if(result.batch.items.length!==2 || result.issues.length) throw new Error('PACKAGED_IMPORT_FAILED');
+    if((await library.search({query:'synthetic'})).length!==2)throw new Error('PACKAGED_LIBRARY_FAILED');
+    if(!result.batch.items[0].text || result.batch.items[1].text!==undefined) throw new Error('PACKAGED_CONTENT_KIND_FAILED');
   } finally {await library.close();}
 }`,
   );
@@ -108,11 +94,12 @@ export default async function(){
     (e) => e.resolvedPath === join(installed, "src/index.ts"),
   );
   assert.ok(extension);
-  assert.deepEqual([...extension.commands.keys()], ["sources"]);
+  assert.deepEqual([...extension.commands.keys()], []);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url.href, feedUrl);
   assert.deepEqual(
     [...extension.tools.keys()].sort(),
     [
-      "current_sources",
       "current_source_import",
       "current_library_search",
       "current_library_read",

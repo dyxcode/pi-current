@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,6 +121,8 @@ void [version, body, content, inspect, candidateAsSource];
     join(root, "probe.mjs"),
     await readFile(join(repo, "tests/package/fixtures/probe.mjs")),
   );
+  await cp(join(repo, "tests/helpers/page-harness.mjs"), join(root, "page-harness.mjs"));
+  await cp(join(repo, "tests/package/fixtures/feed.mjs"), join(root, "feed.mjs"));
   await mkdir(join(root, "unrelated"));
   execFileSync(process.execPath, [join(root, "probe.mjs")], { cwd: root, stdio: "inherit" });
   console.log(

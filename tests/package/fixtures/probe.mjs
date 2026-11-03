@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, sep } from "node:path";
 
@@ -133,42 +133,6 @@ for (const name of [
 assert.equal((await lstat(installed)).isSymbolicLink(), false);
 await assert.rejects(lstat(join(root, "node_modules/playwright")), { code: "ENOENT" });
 
-const pluginDir = join(root, "external-plugins");
-const helperDir = join(pluginDir, "node_modules", "probe-helper");
-await mkdir(helperDir, { recursive: true });
-await writeFile(
-  join(helperDir, "package.json"),
-  JSON.stringify({
-    name: "probe-helper",
-    version: "1.0.0",
-    type: "module",
-    exports: "./index.mjs",
-  }),
-);
-await writeFile(
-  join(helperDir, "index.mjs"),
-  "export const body = 'Synthetic independent plugin dependency.';",
-);
-const plugin = `import { body } from 'probe-helper';
-export default {
-  id: 'sample', name: 'Sample',
-  async fetch(input, {signal}) {
-    signal.throwIfAborted();
-    const item = { externalId: 'one', url: 'https://example.com/a', title: 'Synthetic', text: body, retrievedAt: '2026-01-01T00:00:00.000Z', sourceCompleteness: 'unknown', truncated: false };
-    return { items: [item], issues: [] };
-  },
-};`;
-await writeFile(join(pluginDir, "sample.mjs"), plugin);
-await writeFile(
-  join(pluginDir, "sample.ts"),
-  plugin
-    .replace("id: 'sample'", "id: 'typescript'")
-    .replace(
-      "async fetch(input, {signal})",
-      "async fetch(input: {url: string; limit: number}, {signal}: {signal: AbortSignal})",
-    ),
-);
-
 globalThis.fetch = async () => {
   throw new Error("Unexpected network request during package probe");
 };
@@ -194,8 +158,8 @@ const extension = loaded.extensions.find(
   (value) => value.resolvedPath === join(installed, "src/index.ts"),
 );
 assert.ok(extension);
-assert.equal(extension.tools.size, 7);
-assert.deepEqual([...extension.commands.keys()], ["sources"]);
+assert.equal(extension.tools.size, 6);
+assert.deepEqual([...extension.commands.keys()], []);
 console.log(
-  "PASS: isolated Pi loading, external JS/TS plugin dependencies, HTML worker and SQLite import workflow.",
+  "PASS: isolated Pi loading, built-in RSS parsing, HTML worker and SQLite import workflow.",
 );

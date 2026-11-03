@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { validateToolArguments } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const repoRoot = await realpath(join(dirname(fileURLToPath(import.meta.url)), "../.."));
@@ -65,11 +64,10 @@ test("Pi discovers the package from another directory and reloads it without dup
         "current_library_remove",
         "current_library_search",
         "current_source_import",
-        "current_sources",
         "current_web_read",
         "current_web_search",
       ],
-      `${phase}: Pi exposes only the simplified source, library and public web tools`,
+      `${phase}: Pi exposes six direct import, library and public web tools`,
     );
     const read = tools.get("current_web_read").definition;
     assert.deepEqual(
@@ -78,20 +76,21 @@ test("Pi discovers the package from another directory and reloads it without dup
       `${phase}: public page reading has no source or browser routing`,
     );
     const importTool = tools.get("current_source_import").definition;
-    assert.deepEqual(importTool.prepareArguments({ url: "https://example.com/feed.xml" }), {
-      url: "https://example.com/feed.xml",
-      limit: 5,
-      module: "feed",
-    });
-    assert.deepEqual(
-      validateToolArguments(importTool, {
-        id: "import-defaults",
-        name: "current_source_import",
-        arguments: importTool.prepareArguments({ url: "https://example.com/feed.xml" }),
-      }),
-      { url: "https://example.com/feed.xml", limit: 5, module: "feed" },
+    assert.deepEqual(Object.keys(importTool.parameters.properties).sort(), ["limit", "url"]);
+    assert.equal(importTool.prepareArguments, undefined);
+    assert.match(importTool.promptGuidelines.join(" "), /current.*(reading|retrieval).*task/i);
+    assert.match(importTool.promptGuidelines.join(" "), /choose|select/i);
+    assert.match(importTool.promptGuidelines.join(" "), /feed URL/i);
+    assert.doesNotMatch(
+      importTool.promptGuidelines.join(" "),
+      /Do not use it for recommendations/i,
     );
-    assert.match(importTool.promptGuidelines.join(" "), /direct user request/i);
+    assert.equal(tools.has("current_sources"), false);
+    assert.equal(
+      extensions[0].commands.has("sources"),
+      false,
+      `${phase}: Pi does not register a /sources module-management command`,
+    );
     for (const obsolete of [
       "current_source_operation",
       "current_source_save",

@@ -17,8 +17,7 @@
     "src",
     "dist/library-api",
     "README.md",
-    "docs/i18n/README.zh-CN.md",
-    "examples/source-plugin.mjs"
+    "docs/i18n/README.zh-CN.md"
   ],
   "pi": {
     "extensions": [

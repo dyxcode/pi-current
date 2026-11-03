@@ -1,33 +1,30 @@
 import { createHash, randomUUID } from "node:crypto";
 import { answer } from "../library/validation.mjs";
 import type { ContentLibrary, LibraryBatch, LibraryContent } from "../library/types.ts";
-import type { SourceIssue, SourceModule } from "./types.ts";
+import { fetchFeed } from "./feed.ts";
+import type { SourceFetchResult, SourceInput, SourceIssue, SourceEntry } from "./types.ts";
+import { ReadError } from "../web/read-types.ts";
 
 const fetchTimeoutMs = 30_000;
 const maxMetadataCharacters = 4_096;
 const maxUrlCharacters = 8_192;
-const moduleIdPattern = /^[a-z][a-z0-9-]{0,63}$/;
 
-export type ImportInput = { url: string; limit: number };
+export type ImportInput = { url: string; limit?: number };
 export type ImportResult = { sourceId: string; batch: LibraryBatch; issues: SourceIssue[] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function normalizeInput(value: unknown): ImportInput {
+function normalizeImportInput(value: ImportInput): SourceInput {
   if (!isRecord(value)) {
-    throw new Error("Invalid source input: expected an object with url and limit.");
+    throw new Error("Invalid source input: expected an object with url and optional limit.");
   }
-  if (
-    typeof value.limit !== "number" ||
-    !Number.isInteger(value.limit) ||
-    value.limit < 1 ||
-    value.limit > 10
-  ) {
+  const limit = value.limit === undefined ? 5 : value.limit;
+  if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 10) {
     throw new Error("Invalid source input: limit must be an integer from 1 to 10.");
   }
-  if (typeof value.url !== "string" || value.url.length > 8192) {
+  if (typeof value.url !== "string" || value.url.length > maxUrlCharacters) {
     throw new Error("Invalid source input: url must be an HTTP or HTTPS URL.");
   }
   let url: URL;
@@ -36,187 +33,105 @@ function normalizeInput(value: unknown): ImportInput {
   } catch {
     throw new Error("Invalid source input: url must be an HTTP or HTTPS URL.");
   }
-  if (!(["http:", "https:"].includes(url.protocol) && !url.username && !url.password)) {
+  if (!(url.protocol === "http:" || url.protocol === "https:") || url.username || url.password) {
     throw new Error("Invalid source input: url must be an HTTP or HTTPS URL without credentials.");
   }
   url.hash = "";
   if (url.href.length > maxUrlCharacters) {
     throw new Error("Invalid source input: normalized url exceeds 8,192 characters.");
   }
-  return { url: url.href, limit: value.limit };
+  if (JSON.stringify({ sourceUrl: url.href }).length > maxMetadataCharacters) {
+    throw new Error(
+      "Invalid source input: configured URL provenance exceeds the library metadata limit.",
+    );
+  }
+  return { url: url.href, limit };
 }
 
-function sourceIdFor(module: SourceModule, url: string): string {
-  const digest = createHash("sha256").update(`${module.id}\0${url}`).digest("hex").slice(0, 40);
+function sourceIdFor(url: string): string {
+  const digest = createHash("sha256").update(`feed\0${url}`).digest("hex").slice(0, 40);
   return `feed-${digest}`;
 }
 
-function validateModule(module: SourceModule): void {
-  if (
-    !module ||
-    typeof module !== "object" ||
-    !moduleIdPattern.test(module.id) ||
-    typeof module.name !== "string" ||
-    !module.name.trim() ||
-    module.name.length > 80 ||
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: Source names must not contain control characters.
-    /[\u0000-\u001f\u007f]/.test(module.name) ||
-    typeof module.fetch !== "function"
-  ) {
-    throw new Error("Invalid source module: expected a valid id, name, and fetch function.");
-  }
-}
-
-function fetchWithDeadline(
-  module: SourceModule,
-  input: ImportInput,
-  caller?: AbortSignal,
-): Promise<unknown> {
-  if (caller?.aborted) return Promise.reject(new Error("CANCELLED"));
-  const timeoutController = new AbortController();
-  const combined = AbortSignal.any([timeoutController.signal, ...(caller ? [caller] : [])]);
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  timeout = setTimeout(() => timeoutController.abort(new Error("SOURCE_TIMEOUT")), fetchTimeoutMs);
-  const fetching = Promise.resolve().then(() => {
-    if (combined.aborted) {
-      throw caller?.aborted ? new Error("CANCELLED") : new Error("SOURCE_TIMEOUT");
-    }
-    return module.fetch(input, { signal: combined });
-  });
-  const aborted = new Promise<never>((_resolve, reject) => {
-    const onAbort = () =>
-      reject(caller?.aborted ? new Error("CANCELLED") : new Error("SOURCE_TIMEOUT"));
-    if (combined.aborted) onAbort();
-    else combined.addEventListener("abort", onAbort, { once: true });
-    fetching.finally(() => combined.removeEventListener("abort", onAbort)).catch(() => {});
-  });
-  return Promise.race([fetching, aborted]).finally(() => {
-    if (timeout !== undefined) clearTimeout(timeout);
-  });
-}
-
-function issue(index: number, message: string): SourceIssue {
-  return { index, message: message || "Source reported an unspecified issue." };
-}
-
-function validatedIssues(value: unknown): SourceIssue[] {
-  if (!Array.isArray(value))
-    throw new Error("Source returned invalid issue details: issues must be an array.");
-  const issues: SourceIssue[] = [];
-  value.forEach((entry, position) => {
-    if (
-      isRecord(entry) &&
-      Number.isInteger(entry.index) &&
-      Number(entry.index) >= 0 &&
-      Number(entry.index) <= 1_000_000 &&
-      typeof entry.message === "string" &&
-      entry.message.length > 0
-    ) {
-      issues.push(issue(Number(entry.index), entry.message));
-    } else {
-      throw new Error(`Source returned invalid issue details at index ${position}.`);
-    }
-  });
-  return issues;
-}
-
-function safeEntry(
-  value: unknown,
-  sourceId: string,
-  moduleId: string,
-  sourceUrl: string,
-  index: number,
-): LibraryContent {
-  if (!isRecord(value)) throw new Error("Invalid source entry.");
-  const metadata = value.metadata === undefined ? {} : value.metadata;
-  if (!isRecord(metadata)) throw new Error("Invalid source metadata.");
-  const mergedMetadata: Record<string, unknown> = {
-    ...metadata,
+function withFeedIdentity(entry: SourceEntry, sourceId: string, sourceUrl: string): LibraryContent {
+  const metadata: Record<string, string | number | boolean | null> = {
+    ...entry.metadata,
     sourceUrl,
-    sourceModule: moduleId,
   };
-  if (
-    mergedMetadata.feedUrl === sourceUrl &&
-    JSON.stringify(mergedMetadata).length > maxMetadataCharacters
-  ) {
-    // sourceUrl already preserves this exact value, so drop the redundant field only to fit the library schema.
-    delete mergedMetadata.feedUrl;
+  if (metadata.feedUrl === sourceUrl) delete metadata.feedUrl;
+  if (JSON.stringify(metadata).length > maxMetadataCharacters) {
+    throw new Error("Feed entry metadata exceeds the 4,096-character library limit.");
   }
-  const entry = {
-    ...value,
+  const result = {
+    ...entry,
     sourceId,
-    metadata: mergedMetadata,
-    ...(value.observedPosition === undefined ? { observedPosition: index + 1 } : {}),
+    metadata,
   };
-  answer(entry);
-  return entry;
+  answer(result);
+  return result;
 }
 
-function fetchResult(value: unknown): { items: unknown[]; issues: SourceIssue[] } {
-  if (!isRecord(value) || !Array.isArray(value.items) || !Array.isArray(value.issues)) {
-    throw new Error("Source returned an invalid fetch result: expected items and issues arrays.");
+function libraryEntries(
+  fetched: SourceFetchResult,
+  sourceId: string,
+  sourceUrl: string,
+  issues: SourceIssue[],
+): LibraryContent[] {
+  const items: LibraryContent[] = [];
+  for (const [index, entry] of fetched.items.entries()) {
+    const observedPosition = entry.observedPosition;
+    const issueIndex =
+      typeof observedPosition === "number" &&
+      Number.isInteger(observedPosition) &&
+      observedPosition >= 1
+        ? observedPosition - 1
+        : index;
+    try {
+      items.push(withFeedIdentity(entry, sourceId, sourceUrl));
+    } catch (error) {
+      issues.push({
+        index: issueIndex,
+        message:
+          error instanceof Error &&
+          error.message === "Feed entry metadata exceeds the 4,096-character library limit."
+            ? error.message
+            : "Invalid feed entry was skipped.",
+      });
+    }
   }
-  return { items: value.items, issues: validatedIssues(value.issues) };
+  return items;
 }
 
-/** Fetch one source input and save its valid, source-scoped entries through the library API. */
-export async function importSource(
-  module: SourceModule,
+/** Fetch the built-in feed once and save its valid entries through the library API. */
+export async function importFeed(
   library: Pick<ContentLibrary, "save">,
   inputValue: ImportInput,
   signal?: AbortSignal,
 ): Promise<ImportResult> {
-  validateModule(module);
-  const input = normalizeInput(inputValue);
+  const input = normalizeImportInput(inputValue);
   if (signal?.aborted) throw new Error("CANCELLED");
 
-  const sourceId = sourceIdFor(module, input.url);
-  const provenanceLength = JSON.stringify({ sourceUrl: input.url, sourceModule: module.id }).length;
-  if (provenanceLength > maxMetadataCharacters) {
-    throw new Error(
-      "Invalid source input: provenance metadata exceeds the 4,096-character library limit.",
-    );
-  }
+  const sourceId = sourceIdFor(input.url);
   const startedAt = new Date().toISOString();
-  const issues: SourceIssue[] = [];
-  let fetched: unknown;
+  const fetchSignal = AbortSignal.any([
+    AbortSignal.timeout(fetchTimeoutMs),
+    ...(signal ? [signal] : []),
+  ]);
+  let fetched: SourceFetchResult;
   try {
-    fetched = await fetchWithDeadline(module, input, signal);
+    fetched = await fetchFeed(input, fetchSignal);
   } catch (error) {
     if (signal?.aborted) throw new Error("CANCELLED", { cause: error });
+    const reason = fetchSignal.reason;
+    if (fetchSignal.aborted && reason instanceof DOMException && reason.name === "TimeoutError") {
+      throw new ReadError("TIMEOUT", `Feed retrieval exceeded its ${fetchTimeoutMs} ms deadline.`);
+    }
     throw error;
   }
   if (signal?.aborted) throw new Error("CANCELLED");
 
-  const result = fetchResult(fetched);
-  issues.push(...result.issues);
-  const items: LibraryContent[] = [];
-  const seen = new Set<string>();
-  for (let index = 0; index < result.items.length; index++) {
-    if (index >= input.limit) {
-      issues.push(
-        issue(
-          index,
-          "Source returned more items than the requested limit; extra entries were skipped.",
-        ),
-      );
-      break;
-    }
-    const raw = result.items[index];
-    let entry: LibraryContent;
-    try {
-      entry = safeEntry(raw, sourceId, module.id, input.url, index);
-    } catch {
-      issues.push(issue(index, "Invalid source entry was skipped."));
-      continue;
-    }
-    if (seen.has(entry.externalId)) {
-      issues.push(issue(index, "Duplicate external ID was skipped."));
-      continue;
-    }
-    seen.add(entry.externalId);
-    items.push(entry);
-  }
+  const issues = [...fetched.issues];
+  const items = libraryEntries(fetched, sourceId, input.url, issues);
   issues.sort((left, right) => left.index - right.index);
   if (signal?.aborted) throw new Error("CANCELLED");
 

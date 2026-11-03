@@ -10,7 +10,6 @@ import {
 import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import { prepareCompaction } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
 import { registerSources } from "../../src/pi/sources.ts";
-import { SourceRegistry } from "../../src/sources/registry.ts";
 import { createSearchHarness } from "../helpers/search-harness.mjs";
 
 const discoveredAt = "2026-01-02T03:04:05.000Z";
@@ -33,7 +32,6 @@ function candidate(overrides = {}) {
 async function piLibraryHarness(t, value) {
   const h = await createSearchHarness(t);
   const root = join(h.root, "library-cards");
-  const registry = new SourceRegistry({ root });
   const entries = [];
   const runtime = h.loader.getExtensions().runtime;
   const appendEntry = runtime.appendEntry;
@@ -57,7 +55,7 @@ async function piLibraryHarness(t, value) {
     async close() {},
   };
   const extension = await loadExtensionFromFactory(
-    (pi) => registerSources(pi, { root, registry, library }),
+    (pi) => registerSources(pi, { root, library }),
     h.cwd,
     createEventBus(),
     runtime,

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "./content-limits.mjs";
-import type { SourceEntry, SourceModule, SourceIssue, SourceFetchResult } from "./types.ts";
+import type { SourceEntry, SourceInput, SourceIssue, SourceFetchResult } from "./types.ts";
 import { fetchPublicPage } from "../web/http-page.ts";
 import { MAX_DOM_ELEMENTS, ReadError, type ReadErrorCode } from "../web/read-types.ts";
 
@@ -400,26 +400,15 @@ function feedEntries(document: Document): { isAtom: boolean; entries: Element[] 
   );
 }
 
-async function fetchFeed(
-  input: { url: string; limit: number },
-  context: { signal: AbortSignal },
+export async function fetchFeed(
+  input: SourceInput,
+  signal: AbortSignal,
 ): Promise<SourceFetchResult> {
-  if (
-    !input ||
-    typeof input.url !== "string" ||
-    !input.url.trim() ||
-    [...input.url].length > 8_192
-  ) {
-    throw error("INVALID_INPUT", "Provide a public RSS or Atom feed URL.");
-  }
-  if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 10) {
-    throw error("INVALID_INPUT", "Feed limit must be an integer from 1 to 10.");
-  }
-  if (context.signal.aborted) {
+  if (signal.aborted) {
     throw error("CANCELLED", "Feed retrieval was cancelled.");
   }
 
-  const page = await fetchPublicPage(input.url.trim(), context.signal, "feed");
+  const page = await fetchPublicPage(input.url, signal, "feed");
   if (page.partial) {
     throw error(
       "UNSUPPORTED_CONTENT",
@@ -499,9 +488,3 @@ async function fetchFeed(
     dom?.window.close();
   }
 }
-
-export const feedModule: SourceModule = {
-  id: "feed",
-  name: "RSS / Atom",
-  fetch: fetchFeed,
-};

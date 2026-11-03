@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,7 +8,6 @@ import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-
 import { SQLiteContentLibrary } from "../../src/library/store.ts";
 import { registerSources } from "../../src/pi/sources.ts";
 import { openLocalReader } from "../../src/pi/reader.ts";
-import { SourceRegistry } from "../../src/sources/registry.ts";
 import { MAX_ARTICLE_BYTES } from "../../src/sources/content-limits.mjs";
 import { mockPages, PUBLIC_IP } from "../helpers/page-harness.mjs";
 import { createSearchHarness } from "../helpers/search-harness.mjs";
@@ -38,7 +37,6 @@ async function piSourceHarness(t) {
   const temporary = await mkdtemp(join(tmpdir(), "pi-current-pi-source-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const root = join(temporary, "data");
-  const registry = new SourceRegistry({ root });
   const library = new SQLiteContentLibrary(root);
   t.after(() => library.close());
 
@@ -52,13 +50,13 @@ async function piSourceHarness(t) {
   });
 
   const extension = await loadExtensionFromFactory(
-    (pi) => registerSources(pi, { root, registry, library }),
+    (pi) => registerSources(pi, { root, library }),
     harness.cwd,
     createEventBus(),
     runtime,
   );
   const tools = wrapRegisteredTools([...extension.tools.values()], harness.runner);
-  return { entries, extension, library, registry, root, tools };
+  return { entries, extension, library, root, runtime, tools };
 }
 
 function definition(extension, name) {
@@ -115,9 +113,11 @@ test("real Pi import saves a full built-in feed item and keeps body local across
   assert.equal(imported.structuredContent.count, 1);
   assert.match(imported.structuredContent.source, /^feed-[a-f0-9]{40}$/);
   assert.equal(imported.structuredContent.references.length, 1);
-  assert.deepEqual(imported.structuredContent.issueIndexes, [0]);
+  assert.deepEqual(imported.structuredContent.issues, [
+    { index: 0, message: "The entry has no usable HTTP(S) article URL." },
+  ]);
   assert.doesNotMatch(JSON.stringify(imported), /Long feed article|Paragraph 0000|TAILTOKEN/);
-  assert.doesNotMatch(JSON.stringify(imported), /no usable HTTP\(S\) article URL/i);
+  assert.doesNotMatch(JSON.stringify(imported), /Long feed article|PRIVATE_FEED_BODY/);
   const localIssues = f.entries.find((entry) => entry.data.title === "Source import issues");
   assert.ok(localIssues, "Pi retained detailed source issues in a local card");
   assert.match(localIssues.data.body, /Entry 0: The entry has no usable HTTP\(S\) article URL\./);
@@ -176,6 +176,32 @@ test("real Pi import saves a full built-in feed item and keeps body local across
   assert.doesNotMatch(JSON.stringify(removed), /TAILTOKEN|Paragraph 0000/);
 });
 
+test("real Pi import defaults to five feed items and does not fetch their article links", async (t) => {
+  const items = Array.from(
+    { length: 6 },
+    (_, index) =>
+      `<item><guid>default-${index}</guid><title>Default ${index}</title><link>https://example.com/article-${index}</link><description>Feed text ${index}</description></item>`,
+  ).join("\n");
+  const fixture = `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture</title>${items}</channel></rss>`;
+  const { requests, lookups } = mockPages(t, {
+    lookup: async () => [{ address: PUBLIC_IP, family: 4 }],
+    response: () => ({
+      body: fixture,
+      headers: { "content-type": "application/rss+xml; charset=utf-8" },
+    }),
+  });
+  const f = await piSourceHarness(t);
+  const imported = await f.tools
+    .find((tool) => tool.name === "current_source_import")
+    .execute("default-limit", { url: feedUrl });
+
+  assert.equal(imported.structuredContent.count, 5);
+  assert.equal(imported.structuredContent.references.length, 5);
+  assert.equal((await f.library.latest()).items.length, 5);
+  assert.equal(requests.length, 1, "Pi fetched the feed once and did not fetch linked articles");
+  assert.equal(lookups.length, 1);
+});
+
 test("without an interactive TUI, library read reports unread and keeps the body out of results", async (t) => {
   const { requests, lookups } = mockPages(t, {
     lookup: async () => [{ address: PUBLIC_IP, family: 4 }],
@@ -187,7 +213,7 @@ test("without an interactive TUI, library read reports unread and keeps the body
   const f = await piSourceHarness(t);
   const imported = await f.tools
     .find((tool) => tool.name === "current_source_import")
-    .execute("import", { url: feedUrl, limit: 5, module: "feed" });
+    .execute("import", { url: feedUrl, limit: 5 });
   const reference = imported.structuredContent.references[0];
   const result = await definition(f.extension, "current_library_read").execute(
     "non-interactive-read",
@@ -211,7 +237,7 @@ test("without an interactive TUI, library read reports unread and keeps the body
   assert.equal(lookups.length, 1);
 });
 
-test("source import shows a useful failure locally without returning feed evidence", async (t) => {
+test("source import exposes a useful parsing failure without returning feed evidence", async (t) => {
   const { requests, lookups } = mockPages(t, {
     lookup: async () => [{ address: PUBLIC_IP, family: 4 }],
     response: () => ({
@@ -229,100 +255,74 @@ test("source import shows a useful failure locally without returning feed eviden
     { hasUI: true, ui: { notify: (...args) => notices.push(args) } },
   );
   assert.equal(result.structuredContent.status, "failed");
-  assert.match(notices[0][0], /RSS \/ Atom import failed:.*RSS or Atom/i);
+  assert.match(result.structuredContent.message, /UNSUPPORTED_CONTENT.*RSS or Atom/i);
+  assert.match(notices[0][0], /import failed:.*UNSUPPORTED_CONTENT.*RSS or Atom/i);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_FEED_ERROR_BODY|Login/);
   assert.equal(await f.library.latest(), undefined);
   assert.equal(requests.length, 1);
   assert.equal(lookups.length, 1);
 });
 
-test("external module issue messages stay in a local card and only indexes reach the model", async (t) => {
+test("Pi bounds useful feed issues and keeps item bodies out of the receipt", async (t) => {
+  const issueEntries = Array.from(
+    { length: 25 },
+    (_, index) => `<item><guid>issue-${index}</guid><title>Invalid entry ${index}</title></item>`,
+  ).join("\n");
+  const fixture = `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture</title>${issueEntries}</channel></rss>`;
+  mockPages(t, {
+    lookup: async () => [{ address: PUBLIC_IP, family: 4 }],
+    response: () => ({
+      body: fixture,
+      headers: { "content-type": "application/rss+xml; charset=utf-8" },
+    }),
+  });
   const f = await piSourceHarness(t);
-  await mkdir(f.root, { recursive: true });
-  const modulePath = join(f.root, "issue-module.mjs");
-  await writeFile(
-    modulePath,
-    `export default {
-      id: "issue-module", name: "Issue module",
-      async fetch() {
-        return {
-          items: [{
-            externalId: "item-1", url: "https://example.com/item-1", title: "Issue fixture",
-            text: "PRIVATE_ITEM_BODY ${"item text ".repeat(30)}", retrievedAt: "2026-11-03T00:00:00.000Z",
-            sourceCompleteness: "unknown", truncated: false,
-          }],
-          issues: [{ index: 0, message: "PRIVATE_ISSUE_BODY: retained diagnostic" }],
-        };
-      },
-    };\n`,
-  );
-  await f.registry.register(modulePath);
   const result = await f.tools
     .find((tool) => tool.name === "current_source_import")
-    .execute("issue-import", {
-      url: "https://example.com/source",
-      limit: 1,
-      module: "issue-module",
-    });
+    .execute("bounded-issues", { url: feedUrl });
 
-  assert.deepEqual(result.structuredContent.issueIndexes, [0]);
-  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_ISSUE_BODY|PRIVATE_ITEM_BODY/);
+  assert.equal(result.structuredContent.status, "partial");
+  assert.equal(result.structuredContent.count, 0);
+  assert.equal(result.structuredContent.issues.length, 20);
+  assert.deepEqual(result.structuredContent.issues[0], {
+    index: 0,
+    message: "The entry has no usable HTTP(S) article URL.",
+  });
+  assert.ok(result.structuredContent.issues.every(({ message }) => [...message].length <= 200));
+  assert.doesNotMatch(JSON.stringify(result), /Invalid entry 0|PRIVATE/);
+
   const localIssues = f.entries.find((entry) => entry.data.title === "Source import issues");
-  assert.ok(localIssues, "the actual issue message remains available locally");
-  assert.match(localIssues.data.body, /Entry 0: PRIVATE_ISSUE_BODY: retained diagnostic/);
-  assert.doesNotMatch(localIssues.data.body, /PRIVATE_ITEM_BODY/);
+  assert.ok(localIssues);
+  assert.equal((localIssues.data.body.match(/^Entry /gm) ?? []).length, 20);
+  assert.doesNotMatch(localIssues.data.body, /Invalid entry 0|PRIVATE/);
 });
 
-test("/sources adds and removes only external modules and lists the built-in feed", async (t) => {
-  const f = await piSourceHarness(t);
-  await mkdir(f.root, { recursive: true });
-  const modulePath = join(f.root, "sample.mjs");
-  await writeFile(
-    modulePath,
-    `export default { id: "sample", name: "Sample", async fetch() { return { items: [], issues: [] }; } };\n`,
-  );
-  const selections = ["Add module", "Sample [sample] · External", "Remove module", "Back"];
-  const seenOptions = [];
-  const command = f.extension.commands.get("sources");
-  assert.ok(command, "Pi registered /sources");
-  await command.handler("", {
-    hasUI: true,
-    ui: {
-      async select(_title, options) {
-        seenOptions.push(options);
-        const next = selections.shift();
-        return (
-          options.find((option) => option === next) ??
-          options.find((option) => option.includes(next))
-        );
-      },
-      async input() {
-        return modulePath;
-      },
-      notify() {},
-    },
+test("a local card failure does not hide the acknowledged library save", async (t) => {
+  mockPages(t, {
+    lookup: async () => [{ address: PUBLIC_IP, family: 4 }],
+    response: () => ({
+      body: `<?xml version="1.0"?><rss version="2.0"><channel><title>Fixture</title><item><guid>saved-before-card</guid><title>Saved article</title><link>https://example.com/saved</link><description>Readable feed text.</description></item></channel></rss>`,
+      headers: { "content-type": "application/rss+xml; charset=utf-8" },
+    }),
   });
+  const f = await piSourceHarness(t);
+  f.runtime.appendEntry = () => {
+    throw new Error("fixture card renderer failed");
+  };
+  const notices = [];
+  const result = await f.tools
+    .find((tool) => tool.name === "current_source_import")
+    .execute("card-failure", { url: feedUrl }, undefined, undefined, {
+      hasUI: true,
+      ui: { notify: (...args) => notices.push(args) },
+    });
 
-  const rows = await f.registry.list();
-  assert.deepEqual(
-    rows.map(({ id }) => id),
-    ["feed"],
-  );
-  assert.ok(
-    seenOptions[0].some((value) => value.includes("RSS / Atom") && value.includes("Built-in")),
-  );
-  assert.ok(
-    seenOptions.every(
-      (options) => !options.some((value) => /login|check|enable|disable/i.test(value)),
-    ),
-  );
-  assert.doesNotMatch(JSON.stringify(seenOptions), /Set up access|Collect/);
-
-  const listed = await f.tools.find((tool) => tool.name === "current_sources").execute("list", {});
-  assert.deepEqual(listed.structuredContent.sources, [
-    { id: "feed", name: "RSS / Atom", kind: "built-in" },
-  ]);
-  assert.doesNotMatch(JSON.stringify(listed), /modulePath|sample\.mjs|\/tmp\//);
+  assert.equal(result.structuredContent.status, "saved");
+  assert.equal(result.structuredContent.count, 1);
+  assert.equal(result.structuredContent.references.length, 1);
+  assert.match(result.structuredContent.message, /saved.*local card/i);
+  assert.match(notices[0][0], /saved.*local card/i);
+  assert.equal((await f.library.latest()).items.length, 1);
 });
 
 test("session shutdown closes an active reader and prevents a stale result", async (t) => {

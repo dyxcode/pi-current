@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { feedModule } from "../../src/sources/feed.ts";
+import { fetchFeed } from "../../src/sources/feed.ts";
 import { mockPages, PUBLIC_IP } from "../helpers/page-harness.mjs";
 
 const atomMime = "application/atom+xml; charset=utf-8";
@@ -30,9 +30,9 @@ test("RSS 2 imports explicit content, keeps its summary, resolves xml:base, and 
         : { body: feed, headers: { "content-type": rssMime } },
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/news/feed.xml", limit: 1 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.equal(result.items.length, 1);
@@ -70,9 +70,9 @@ test("RSS description without content:encoded remains a summary-only candidate",
     response: () => ({ body: feed, headers: { "content-type": rssMime } }),
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/rss", limit: 5 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.equal(result.items.length, 1);
@@ -112,9 +112,9 @@ test("Atom inline XHTML is preserved, summaries stay separate, and src content i
     response: () => ({ body: feed, headers: { "content-type": atomMime } }),
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/atom/index.xml", limit: 5 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.equal(result.items.length, 3);
@@ -158,9 +158,9 @@ test("entries without usable article URLs and duplicate identities or URLs are r
     response: () => ({ body: feed, headers: { "content-type": rssMime } }),
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/rss", limit: 10 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.deepEqual(
@@ -196,9 +196,9 @@ test("valid empty feeds return no entries or issues; RSS without a channel is ma
       }),
     });
     assert.deepEqual(
-      await feedModule.fetch(
+      await fetchFeed(
         { url: "https://feeds.example.test/atom", limit: 1 },
-        { signal: new AbortController().signal },
+        new AbortController().signal,
       ),
       { items: [], issues: [] },
     );
@@ -212,10 +212,7 @@ test("valid empty feeds return no entries or issues; RSS without a channel is ma
       }),
     });
     await assert.rejects(
-      feedModule.fetch(
-        { url: "https://feeds.example.test/rss", limit: 1 },
-        { signal: new AbortController().signal },
-      ),
+      fetchFeed({ url: "https://feeds.example.test/rss", limit: 1 }, new AbortController().signal),
       /missing its channel/i,
     );
   });
@@ -232,9 +229,9 @@ test("invalid and oversized inline bodies are reported without clipping", async 
     response: () => ({ body: feed, headers: { "content-type": rssMime } }),
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/rss", limit: 3 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.deepEqual(result.items, []);
@@ -256,9 +253,9 @@ test("oversized inline HTML structure is bounded and reported per entry", async 
     response: () => ({ body: feed, headers: { "content-type": rssMime } }),
   });
 
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://feeds.example.test/rss", limit: 3 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
 
   assert.deepEqual(
@@ -307,9 +304,9 @@ test("partial, malformed, and HTML error responses are rejected clearly", async 
         }),
       });
       await assert.rejects(
-        feedModule.fetch(
+        fetchFeed(
           { url: "https://feeds.example.test/rss", limit: 1 },
-          { signal: new AbortController().signal },
+          new AbortController().signal,
         ),
         scenario.error,
       );
@@ -323,10 +320,7 @@ test("feed retrieval rejects cancellation before opening a socket", async (t) =>
   controller.abort();
 
   await assert.rejects(
-    feedModule.fetch(
-      { url: "https://feeds.example.test/rss", limit: 1 },
-      { signal: controller.signal },
-    ),
+    fetchFeed({ url: "https://feeds.example.test/rss", limit: 1 }, controller.signal),
     /CANCELLED|cancel/i,
   );
   assert.equal(requests.length, 0);
@@ -344,9 +338,9 @@ test("Atom text-construct titles are readable and entries inherit the feed autho
       </feed>`,
     }),
   });
-  const result = await feedModule.fetch(
+  const result = await fetchFeed(
     { url: "https://example.org/feed", limit: 1 },
-    { signal: new AbortController().signal },
+    new AbortController().signal,
   );
   assert.equal(result.items[0].title, "A readable title");
   assert.equal(result.items[0].author, "Feed Editor");
