@@ -5,8 +5,17 @@
   "description": "Web access and personal discovery for Pi.",
   "license": "UNLICENSED",
   "type": "module",
+  "exports": {
+    "./library": {
+      "types": "./dist/library-api/library/index.d.ts",
+      "node": {
+        "import": "./dist/library-api/library/index.js"
+      }
+    }
+  },
   "files": [
     "src",
+    "dist/library-api",
     "README.md",
     "docs/i18n/README.zh-CN.md",
     "examples/source-plugin.mjs"
@@ -21,6 +30,7 @@
   },
   "scripts": {
     "dev": "pi --extension ./src/index.ts",
+    "build:library": "node scripts/build-library.mjs",
     "lint": "biome lint --error-on-warnings",
     "format:check": "biome ci --linter-enabled=false --assist-enabled=false",
     "format": "biome format --write",

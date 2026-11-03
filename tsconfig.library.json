@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": false,
+    "noEmit": false,
+    "outDir": "./dist/library-api",
+    "rewriteRelativeImportExtensions": true,
+    "sourceMap": false
+  },
+  "include": ["src/library/index.ts"]
+}

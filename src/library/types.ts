@@ -1,4 +1,4 @@
-import type { SourceItem, Batch } from "../sources/types.ts";
+import type { SourceItem, Batch } from "../sources/types.js";
 
 export type LibraryItem = SourceItem & {
   itemId: string;

@@ -10,6 +10,7 @@ const cache = join(root, "cache");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmOptions = ["--ignore-scripts", "--no-audit", "--no-fund", "--cache", cache];
 try {
+  execFileSync(npm, ["run", "build:library"], { cwd: repo, stdio: "inherit" });
   const manifest = JSON.parse(await readFile(join(repo, "package.json"), "utf8"));
   const lock = JSON.parse(await readFile(join(repo, "package-lock.json"), "utf8"));
   const [artifact] = JSON.parse(
@@ -47,6 +48,48 @@ try {
   });
   execFileSync(npm, ["ci", "--omit=dev", ...npmOptions], { cwd: root, stdio: "inherit" });
   const installed = join(root, "node_modules", "pi-current");
+  await writeFile(
+    join(root, "library-consumer.mts"),
+    `import { openContentLibrary, type SourceItem } from "pi-current/library";
+const library = openContentLibrary({ root: "/tmp/pi-current-library-types" });
+const version: 1 = library.apiVersion;
+const item: SourceItem = {
+  sourceId: "sample",
+  externalId: "one",
+  url: "https://example.com/a",
+  title: "Sample",
+  text: "Synthetic body",
+  retrievedAt: "2026-01-01T00:00:00.000Z",
+  sourceCompleteness: "unknown",
+  truncated: false,
+};
+void [version, item];
+`,
+  );
+  const typeProject = join(root, "tsconfig.library-consumer.json");
+  await writeFile(
+    typeProject,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          strict: true,
+          noEmit: true,
+          types: [],
+        },
+        files: ["library-consumer.mts"],
+      },
+      null,
+      2,
+    ),
+  );
+  execFileSync(
+    process.execPath,
+    [join(repo, "node_modules", "typescript", "bin", "tsc"), "--project", typeProject],
+    { cwd: root, stdio: "inherit" },
+  );
   const extension = (
     await readFile(join(repo, "scripts/package-extension.mjs"), "utf8")
   ).replaceAll("__PACKAGE_ROOT__", installed.replaceAll("\\", "\\\\").replaceAll('"', '\\"'));

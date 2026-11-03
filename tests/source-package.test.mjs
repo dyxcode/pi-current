@@ -28,7 +28,7 @@ test("actual npm artifact loads in Pi and registers external JS and TS plugins w
   for (const f of report.files) {
     assert.match(
       f.path,
-      /^(package.json|README.md|docs\/i18n\/README.zh-CN.md|src\/|examples\/source-plugin.mjs)/,
+      /^(package.json|README.md|docs\/i18n\/README.zh-CN.md|src\/|dist\/library-api\/|examples\/source-plugin.mjs)/,
     );
     assert.doesNotMatch(f.path, /\.local|agent-docs|cookies|profile|\.sqlite|sources.json/);
   }

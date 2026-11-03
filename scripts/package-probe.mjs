@@ -1,10 +1,81 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, sep } from "node:path";
 
 const root = process.cwd();
 const installed = join(root, "node_modules", "pi-current");
+const nodeOnlyEnv = { ...process.env };
+delete nodeOnlyEnv.NODE_OPTIONS;
+const nodeOnlyProbe = `
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openContentLibrary } from "pi-current/library";
+
+const root = await mkdtemp(join(tmpdir(), "pi-current-library-node-only-"));
+const library = openContentLibrary({ root });
+const collectedAt = "2026-11-03T00:00:00.000Z";
+const sourceItem = {
+  sourceId: "sample",
+  externalId: "one",
+  url: "https://example.com/a",
+  title: "Sample",
+  text: "Original synthetic body",
+  retrievedAt: collectedAt,
+  sourceCompleteness: "unknown",
+  truncated: false,
+};
+try {
+  assert.equal(library.apiVersion, 1);
+  assert.deepEqual(await library.search({ query: "synthetic" }), []);
+  const first = await library.save({
+    batch: {
+      id: randomUUID(),
+      sourceId: "sample",
+      collectedAt,
+      items: [sourceItem],
+      failures: [],
+      stopReason: "complete",
+    },
+    requestedCount: 1,
+    startedAt: collectedAt,
+  });
+  const firstItem = first.items[0];
+  assert.ok(firstItem);
+
+  const revised = await library.save({
+    batch: {
+      id: randomUUID(),
+      sourceId: "sample",
+      collectedAt,
+      items: [{ ...sourceItem, text: "Updated synthetic body" }],
+      failures: [],
+      stopReason: "complete",
+    },
+    requestedCount: 1,
+    startedAt: collectedAt,
+  });
+  assert.equal(revised.items[0]?.itemId, firstItem.itemId);
+  assert.notEqual(revised.items[0]?.versionId, firstItem.versionId);
+  assert.equal(
+    (await library.read({ itemId: firstItem.itemId, versionId: firstItem.versionId }))?.text,
+    sourceItem.text,
+  );
+} finally {
+  await library.close();
+  await rm(root, { recursive: true, force: true });
+}
+`;
+execFileSync(process.execPath, ["--input-type=module", "-e", nodeOnlyProbe], {
+  cwd: root,
+  env: nodeOnlyEnv,
+  stdio: "inherit",
+});
+console.log("PASS: installed library entry imports and reads through standalone Node.");
 const require = createRequire(join(installed, "package.json"));
 for (const name of [
   "@modelcontextprotocol/sdk/client/index.js",
