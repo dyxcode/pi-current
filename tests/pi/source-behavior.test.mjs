@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SourceRegistry } from "../src/sources/registry.ts";
+import { SourceRegistry } from "../../src/sources/registry.ts";
 import {
   batch,
   deferred,
@@ -10,7 +10,7 @@ import {
   saveRequest,
   sourceHarness,
   sourcePlugin,
-} from "./helpers/source-harness.mjs";
+} from "../helpers/source-harness.mjs";
 
 const userInput = (text) => ({ text, source: "interactive" });
 

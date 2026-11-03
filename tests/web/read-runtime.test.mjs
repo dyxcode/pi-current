@@ -3,9 +3,9 @@ import { test } from "node:test";
 import http from "node:http";
 import workerThreads from "node:worker_threads";
 import { once } from "node:events";
-import { requestPage } from "../src/web/http-page.ts";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
-import { mockPages, articleHtml, assertReadError } from "./helpers/page-harness.mjs";
+import { requestPage } from "../../src/web/http-page.ts";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
+import { mockPages, articleHtml, assertReadError } from "../helpers/page-harness.mjs";
 
 async function localServer(t, handler) {
   const server = http.createServer(handler);

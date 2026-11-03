@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collectAndSave } from "../src/sources/collection.ts";
-import { batch, deferred, memoryLibrary } from "./helpers/source-harness.mjs";
+import { collectAndSave } from "../../src/sources/collection.ts";
+import { batch, deferred, memoryLibrary } from "../helpers/source-harness.mjs";
 
 test("collection and persistence run without Pi and preserve one batch identity and provenance", async () => {
   const acquired = batch();

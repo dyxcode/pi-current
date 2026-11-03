@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { SQLiteContentLibrary } from "../src/library/store.ts";
-import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "../src/sources/content-limits.mjs";
+import { SQLiteContentLibrary } from "../../src/library/store.ts";
+import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "../../src/sources/content-limits.mjs";
 
 const time = "2026-10-23T00:00:00.000Z";
 function answer(overrides = {}) {

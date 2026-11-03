@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SourceRegistry } from "../src/sources/registry.ts";
+import { SourceRegistry } from "../../src/sources/registry.ts";
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "current-plugins-"));
   t.after(() => rm(root, { recursive: true, force: true }));

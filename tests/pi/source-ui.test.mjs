@@ -6,11 +6,11 @@ import {
   SessionManager,
   buildSessionContext,
 } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { prepareCompaction } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
-import { registerSources } from "../src/pi/sources.ts";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
-import { sourceHarness, saveRequest } from "./helpers/source-harness.mjs";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { prepareCompaction } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js";
+import { registerSources } from "../../src/pi/sources.ts";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
+import { sourceHarness, saveRequest } from "../helpers/source-harness.mjs";
 
 test("/sources registers a local module without collecting; capability actions and removal retain storage", async (t) => {
   const f = await sourceHarness(t);

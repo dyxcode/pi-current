@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openContentLibrary } from "../src/library/index.ts";
+import { openContentLibrary } from "../../src/library/index.ts";
 
 const observed = "2026-11-03T01:00:00.000Z";
 const retrieved = "2026-11-03T02:00:00.000Z";

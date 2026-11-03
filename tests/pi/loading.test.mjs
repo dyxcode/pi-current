@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-const repoRoot = await realpath(join(dirname(fileURLToPath(import.meta.url)), ".."));
+const repoRoot = await realpath(join(dirname(fileURLToPath(import.meta.url)), "../.."));
 
 test("Pi discovers the package from another directory and reloads it without duplication", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "pi-current-loading-"));

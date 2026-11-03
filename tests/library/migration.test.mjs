@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { SQLiteContentLibrary } from "../src/library/store.ts";
+import { SQLiteContentLibrary } from "../../src/library/store.ts";
 
 const time = "2026-10-23T00:00:00.000Z";
 const priorTime = "2026-10-22T00:00:00.000Z";

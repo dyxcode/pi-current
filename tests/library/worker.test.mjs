@@ -13,9 +13,9 @@ async function fixture(t, behavior) {
   await mkdir(join(root, "library"));
   await mkdir(join(root, "sources"));
   for (const name of ["store.ts", "validation.mjs"])
-    await cp(new URL(`../src/library/${name}`, import.meta.url), join(root, "library", name));
+    await cp(new URL(`../../src/library/${name}`, import.meta.url), join(root, "library", name));
   await cp(
-    new URL("../src/sources/content-limits.mjs", import.meta.url),
+    new URL("../../src/sources/content-limits.mjs", import.meta.url),
     join(root, "sources/content-limits.mjs"),
   );
   await writeFile(

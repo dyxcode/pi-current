@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { sourceHarness, memoryLibrary, deferred, batch } from "./helpers/source-harness.mjs";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
-import { registerSources } from "../src/pi/sources.ts";
+import { sourceHarness, memoryLibrary, deferred, batch } from "../helpers/source-harness.mjs";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
+import { registerSources } from "../../src/pi/sources.ts";
 import { createEventBus, wrapRegisteredTools } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { operationIntent } from "../src/pi/operation-intent.ts";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { operationIntent } from "../../src/pi/operation-intent.ts";
 
 const plugin = `export default {
   apiVersion:1,id:'sample',name:'Sample',hosts:['example.com'],

@@ -7,7 +7,7 @@ coverage/
 
 # Local development instructions and agent state
 /AGENTS.md
-/agent-docs/
+/.agent/
 .pi/
 .codex/
 .agents/

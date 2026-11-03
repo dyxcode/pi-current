@@ -114,10 +114,13 @@ void [version, body, content, inspect, candidateAsSource];
     { cwd: root, stdio: "inherit" },
   );
   const extension = (
-    await readFile(join(repo, "scripts/package-extension.mjs"), "utf8")
+    await readFile(join(repo, "tests/package/fixtures/extension.mjs"), "utf8")
   ).replaceAll("__PACKAGE_ROOT__", installed.replaceAll("\\", "\\\\").replaceAll('"', '\\"'));
   await writeFile(join(root, "extension.mjs"), extension);
-  await writeFile(join(root, "probe.mjs"), await readFile(join(repo, "scripts/package-probe.mjs")));
+  await writeFile(
+    join(root, "probe.mjs"),
+    await readFile(join(repo, "tests/package/fixtures/probe.mjs")),
+  );
   await mkdir(join(root, "unrelated"));
   execFileSync(process.execPath, [join(root, "probe.mjs")], { cwd: root, stdio: "inherit" });
   console.log(

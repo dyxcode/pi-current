@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { createEventBus, wrapRegisteredTools } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { registerSources } from "../src/pi/sources.ts";
-import { MAX_ARTICLE_BYTES } from "../src/sources/content-limits.mjs";
-import { sourceHarness, sourcePlugin } from "./helpers/source-harness.mjs";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { registerSources } from "../../src/pi/sources.ts";
+import { MAX_ARTICLE_BYTES } from "../../src/sources/content-limits.mjs";
+import { sourceHarness, sourcePlugin } from "../helpers/source-harness.mjs";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
 
 const digest = (text) => createHash("sha256").update(text).digest("hex");
 

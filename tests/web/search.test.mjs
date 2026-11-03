@@ -8,7 +8,7 @@ import {
   jsonRpcResponse,
   MCP_ENDPOINT,
   syntheticEvidenceText,
-} from "./helpers/search-harness.mjs";
+} from "../helpers/search-harness.mjs";
 
 const realSetTimeout = globalThis.setTimeout;
 const realClearTimeout = globalThis.clearTimeout;

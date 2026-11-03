@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { SourceRegistry } from "../src/sources/registry.ts";
+import { SourceRegistry } from "../../src/sources/registry.ts";
 
 async function fixture(t, body = "", timeoutMs = 45000, loginDelayMs = 0) {
   const root = await mkdtemp(join(tmpdir(), "current-operations-"));

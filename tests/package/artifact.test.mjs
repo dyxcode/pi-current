@@ -6,7 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 test("actual npm artifact loads in Pi and registers external JS and TS plugins without network or private files", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "current-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -30,7 +30,7 @@ test("actual npm artifact loads in Pi and registers external JS and TS plugins w
       f.path,
       /^(package.json|README.md|docs\/i18n\/README.zh-CN.md|src\/|dist\/library-api\/|examples\/source-plugin.mjs)/,
     );
-    assert.doesNotMatch(f.path, /\.local|agent-docs|cookies|profile|\.sqlite|sources.json/);
+    assert.doesNotMatch(f.path, /\.local|\.agent|cookies|profile|\.sqlite|sources.json/);
   }
   const modules = join(root, "node_modules");
   const installed = join(modules, "pi-current");

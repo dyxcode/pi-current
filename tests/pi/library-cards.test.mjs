@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus, wrapRegisteredTools } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { registerSources } from "../src/pi/sources.ts";
-import { SourceRegistry } from "../src/sources/registry.ts";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { registerSources } from "../../src/pi/sources.ts";
+import { SourceRegistry } from "../../src/sources/registry.ts";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
 
 const discoveredAt = "2026-01-02T03:04:05.000Z";
 const itemId = "11111111-1111-4111-8111-111111111111";

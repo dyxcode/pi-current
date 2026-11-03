@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { SQLiteContentLibrary } from "../src/library/store.ts";
+import { SQLiteContentLibrary } from "../../src/library/store.ts";
 const now = "2026-01-01T00:00:00.000Z";
 const item = (sourceId, text = "Fixture body") => ({
   sourceId,

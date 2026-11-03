@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { registerLocalCards } from "../src/pi/cards.ts";
+import { registerLocalCards } from "../../src/pi/cards.ts";
 
 function cardFixture() {
   const entries = [];

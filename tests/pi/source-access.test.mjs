@@ -3,10 +3,10 @@ import { test } from "node:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { registerSources } from "../src/pi/sources.ts";
-import { sourceHarness, row } from "./helpers/source-harness.mjs";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
+import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { registerSources } from "../../src/pi/sources.ts";
+import { sourceHarness, row } from "../helpers/source-harness.mjs";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
 
 const connections = [
   { id: "token", name: "Platform credentials", login: true, check: true },

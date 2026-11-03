@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createSearchHarness } from "./helpers/search-harness.mjs";
+import { createSearchHarness } from "../helpers/search-harness.mjs";
 
 test("Pi exposes public-page reading with a separate input and output contract", async (t) => {
   const { tool } = await createSearchHarness(t, "current_web_read");
@@ -15,7 +15,7 @@ test("Pi exposes public-page reading with a separate input and output contract",
 
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
-import { articleHtml, mockPages, PUBLIC_IP, assertReadError } from "./helpers/page-harness.mjs";
+import { articleHtml, mockPages, PUBLIC_IP, assertReadError } from "../helpers/page-harness.mjs";
 
 async function invoke(t, args, signal) {
   const harness = await createSearchHarness(t, "current_web_read");
