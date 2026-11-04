@@ -9,6 +9,7 @@ const ATOM_NAMESPACE = "http://www.w3.org/2005/Atom";
 const RSS_CONTENT_NAMESPACE = "http://purl.org/rss/1.0/modules/content/";
 const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
 const RSS_ROOTS = new Set(["rss", "RDF"]);
+const atomFeedAuthorCache = new WeakMap<Element, string | undefined>();
 const BLOCK_ELEMENTS = new Set([
   "address",
   "article",
@@ -247,13 +248,19 @@ function rssAuthor(entry: Element): string | undefined {
 }
 
 function atomAuthor(entry: Element): string | undefined {
+  const entryAuthor = firstElement(entry, "author", ATOM_NAMESPACE);
+  if (entryAuthor) return fieldText(firstElement(entryAuthor, "name", ATOM_NAMESPACE));
+
   const parent = entry.parentElement;
-  const author =
-    firstElement(entry, "author", ATOM_NAMESPACE) ??
-    (parent?.localName === "feed" && parent.namespaceURI === ATOM_NAMESPACE
-      ? firstElement(parent, "author", ATOM_NAMESPACE)
-      : undefined);
-  return fieldText(author && firstElement(author, "name", ATOM_NAMESPACE));
+  if (parent?.localName !== "feed" || parent.namespaceURI !== ATOM_NAMESPACE) return undefined;
+  if (!atomFeedAuthorCache.has(parent)) {
+    const feedAuthor = firstElement(parent, "author", ATOM_NAMESPACE);
+    atomFeedAuthorCache.set(
+      parent,
+      fieldText(feedAuthor && firstElement(feedAuthor, "name", ATOM_NAMESPACE)),
+    );
+  }
+  return atomFeedAuthorCache.get(parent);
 }
 
 function withinTextLimit(value: string | undefined, max: number, bytes = false): boolean {
@@ -354,9 +361,6 @@ function parseEntry(
     };
   }
 
-  if (observedPosition > 10_000) {
-    return { message: "The entry's original position exceeds the 10,000-position library limit." };
-  }
   const entry = sourceEntry(
     {
       url,
@@ -408,7 +412,15 @@ export async function fetchFeed(
     throw error("CANCELLED", "Feed retrieval was cancelled.");
   }
 
-  const page = await fetchPublicPage(input.url, signal, "feed");
+  const page = await fetchPublicPage(input.url, signal, "feed", input.validators);
+  if (page.notModified) {
+    return {
+      items: [],
+      issues: [],
+      notModified: true,
+      ...(page.validators ? { validators: page.validators } : {}),
+    };
+  }
   if (page.partial) {
     throw error(
       "UNSUPPORTED_CONTENT",
@@ -448,7 +460,6 @@ export async function fetchFeed(
     const discoveredAt = new Date().toISOString();
 
     for (const [index, entryElement] of entries.entries()) {
-      if (items.length >= input.limit) break;
       let parsed: ReturnType<typeof parseEntry>;
       try {
         parsed = parseEntry(entryElement, isAtom, page.finalUrl, parser, discoveredAt, index + 1);
@@ -474,7 +485,7 @@ export async function fetchFeed(
       externalIds.add(parsed.entry.externalId);
       items.push(parsed.entry);
     }
-    return { items, issues };
+    return { items, issues, ...(page.validators ? { validators: page.validators } : {}) };
   } catch (cause) {
     if (cause instanceof ReadError) throw cause;
     if (mime === "text/html") {

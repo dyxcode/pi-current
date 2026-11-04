@@ -66,6 +66,34 @@ CREATE VIRTUAL TABLE library_fts USING fts5(title, body, version_id UNINDEXED, t
 PRAGMA user_version=1;
 `;
 
+const schemaV2 = `
+CREATE TABLE items (
+ id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, latest_version_id TEXT,
+ first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(source, external_id)
+) STRICT;
+CREATE TABLE item_versions (
+ id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+ hash TEXT NOT NULL, payload TEXT NOT NULL, title TEXT NOT NULL, body TEXT,
+ UNIQUE(item_id, hash)
+) STRICT;
+CREATE TABLE collection_runs (
+ id TEXT PRIMARY KEY, source TEXT NOT NULL, hash TEXT NOT NULL, requested_count INTEGER NOT NULL,
+ started_at TEXT NOT NULL, completed_at TEXT NOT NULL, saved_count INTEGER NOT NULL,
+ failures TEXT NOT NULL, stop_reason TEXT NOT NULL
+) STRICT;
+CREATE TABLE collection_items (
+ run_id TEXT NOT NULL REFERENCES collection_runs(id) ON DELETE CASCADE,
+ item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+ version_id TEXT NOT NULL REFERENCES item_versions(id) ON DELETE CASCADE,
+ discovered_at TEXT NOT NULL, retrieved_at TEXT, position INTEGER NOT NULL,
+ PRIMARY KEY(run_id, item_id)
+) STRICT;
+CREATE INDEX observations_by_item ON collection_items(item_id);
+CREATE INDEX versions_by_item ON item_versions(item_id);
+CREATE VIRTUAL TABLE library_fts USING fts5(title, summary, body, version_id UNINDEXED, tokenize='trigram');
+PRAGMA user_version=2;
+`;
+
 function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -83,14 +111,17 @@ function versionHash(item) {
   ]);
 }
 
-async function seedLegacyDatabase(t, { incompatibleFts = false, malformedPayload = false } = {}) {
+async function seedLegacyDatabase(
+  t,
+  { incompatibleFts = false, malformedPayload = false, schemaVersion = 1 } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "pi-current-library-v1-"));
   const path = join(root, "content.sqlite");
   t.after(() => rm(root, { recursive: true, force: true }));
   const payload = malformedPayload ? "not-json" : JSON.stringify(legacyItem);
   const hash = versionHash(legacyItem);
   const db = new DatabaseSync(path);
-  db.exec(schemaV1);
+  db.exec(schemaVersion === 1 ? schemaV1 : schemaV2);
   db.prepare("INSERT INTO items VALUES (?,?,?,?,?,?,?)").run(
     itemId,
     legacyItem.sourceId,
@@ -286,7 +317,7 @@ function assertLegacyRowsPreserved(state, { payload, hash }, { schemaVersion = 2
   assert.ok(state.observationIndexes.some((index) => index.name === "observations_by_item"));
 }
 
-test("reading a v1 library migrates it without changing saved identities or evidence", async (t) => {
+test("reading a v1 library migrates it through v2 to the preparation schema without changing saved evidence", async (t) => {
   const fixture = await seedLegacyDatabase(t);
   const library = new SQLiteContentLibrary(fixture.root);
   t.after(() => library.close());
@@ -298,7 +329,7 @@ test("reading a v1 library migrates it without changing saved identities or evid
   assert.equal(item.summary, legacyItem.summary);
 
   const migrated = snapshot(fixture.path);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 3);
   assertLegacyRowsPreserved(migrated, fixture);
   assert.deepEqual(migrated.ftsColumns, ["title", "summary", "body", "version_id"]);
   assert.equal(migrated.ftsRows.length, 2);
@@ -321,7 +352,7 @@ test("searching a v1 library migrates summary search and repeated content keeps 
   assert.equal(matches[0].itemId, itemId);
   assert.equal(matches[0].versionId, versionId);
   assert.equal(matches[0].text, legacyItem.text);
-  assert.equal(snapshot(fixture.path).version, 2);
+  assert.equal(snapshot(fixture.path).version, 3);
 
   const saved = await library.save({
     batch: {
@@ -341,6 +372,27 @@ test("searching a v1 library migrates summary search and repeated content keeps 
   try {
     assert.equal(db.prepare("SELECT count(*) AS count FROM item_versions").get().count, 2);
     assert.equal(db.prepare("SELECT count(*) AS count FROM library_fts").get().count, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test("reading a v2 library adds an empty preparation pointer table without changing saved evidence", async (t) => {
+  const fixture = await seedLegacyDatabase(t, { schemaVersion: 2 });
+  const library = new SQLiteContentLibrary(fixture.root);
+  t.after(() => library.close());
+
+  const item = await library.read({ itemId });
+  assert.equal(item.itemId, itemId);
+  assert.equal(item.versionId, versionId);
+  assert.equal(item.text, legacyItem.text);
+
+  const migrated = snapshot(fixture.path);
+  assert.equal(migrated.version, 3);
+  assertLegacyRowsPreserved(migrated, fixture, { schemaVersion: 2 });
+  const db = new DatabaseSync(fixture.path);
+  try {
+    assert.deepEqual(db.prepare("SELECT * FROM source_preparations").all(), []);
   } finally {
     db.close();
   }

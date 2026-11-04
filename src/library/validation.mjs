@@ -4,6 +4,10 @@ import {
   MAX_SUMMARY_CHARACTERS,
 } from "../sources/content-limits.mjs";
 
+const SOURCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
+const MAX_PREPARATION_ISSUE_CHARACTERS = 1000;
+const MAX_FEED_VALIDATOR_CHARACTERS = 8192;
+
 /** @param {unknown} value @returns {asserts value is Record<string, unknown>} */
 function object(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -32,9 +36,14 @@ function text(value, max, empty = false) {
 }
 /** @param {unknown} value @param {number} max */
 function integer(value, max) {
-  if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > max)
+  if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > max)
     throw new Error("LIBRARY_INVALID");
 }
+/** @param {unknown} value */
+function nonNegativeSafeInteger(value) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error("LIBRARY_INVALID");
+}
+/** @param {string} address */
 /** @param {unknown} value */
 function date(value) {
   text(value, 40);
@@ -48,11 +57,44 @@ export function id(value) {
   )
     throw new Error("LIBRARY_INVALID");
 }
+/** @param {unknown} value @returns {asserts value is string} */
+export function sourceId(value) {
+  text(value, 64);
+  if (!SOURCE_ID.test(value)) throw new Error("LIBRARY_INVALID");
+}
+/** @param {unknown} value @returns {asserts value is import('../sources/types.ts').FeedValidators} */
+export function feedValidators(value) {
+  object(value);
+  text(value.url, MAX_FEED_VALIDATOR_CHARACTERS);
+  if (/[\r\n]/.test(value.url)) throw new Error("LIBRARY_INVALID");
+  let url;
+  try {
+    url = new URL(value.url);
+  } catch {
+    throw new Error("LIBRARY_INVALID");
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    !url.hostname ||
+    url.href.length > MAX_FEED_VALIDATOR_CHARACTERS
+  )
+    throw new Error("LIBRARY_INVALID");
+  for (const key of ["etag", "lastModified"]) {
+    const header = value[key];
+    if (header === undefined) continue;
+    text(header, MAX_FEED_VALIDATOR_CHARACTERS);
+    if (/[\r\n]/.test(header) || Buffer.byteLength(header, "utf8") > MAX_FEED_VALIDATOR_CHARACTERS)
+      throw new Error("LIBRARY_INVALID");
+  }
+  if (Object.keys(value).some((key) => !["url", "etag", "lastModified"].includes(key)))
+    throw new Error("LIBRARY_INVALID");
+}
 /** @param {unknown} value @returns {asserts value is import('./types.ts').LibraryContent} */
 export function answer(value) {
   object(value);
-  text(value.sourceId, 64);
-  if (!/^[a-z][a-z0-9-]*$/.test(value.sourceId)) throw new Error("LIBRARY_INVALID");
+  sourceId(value.sourceId);
   text(value.externalId, 256);
   text(value.url, 8192);
   let url;
@@ -84,7 +126,8 @@ export function answer(value) {
   }
   if (value.summary !== undefined) text(value.summary, MAX_SUMMARY_CHARACTERS, true);
   if (value.discoveredAt !== undefined) date(value.discoveredAt);
-  if (value.observedPosition !== undefined) integer(value.observedPosition, 10000);
+  if (value.observedPosition !== undefined)
+    integer(value.observedPosition, Number.MAX_SAFE_INTEGER);
   if (
     Object.keys(value).some(
       (k) =>
@@ -122,15 +165,14 @@ export function answer(value) {
 /** @param {unknown} value @returns {asserts value is import('./types.ts').SaveRequest} */
 export function saveRequest(value) {
   object(value);
-  integer(value.requestedCount, 10);
+  nonNegativeSafeInteger(value.requestedCount);
   date(value.startedAt);
   const batch = value.batch;
   object(batch);
   id(batch.id);
   date(batch.collectedAt);
   text(batch.stopReason, 100);
-  text(batch.sourceId, 64);
-  if (!/^[a-z][a-z0-9-]*$/.test(batch.sourceId)) throw new Error("LIBRARY_INVALID");
+  sourceId(batch.sourceId);
   if (
     !Array.isArray(batch.items) ||
     batch.items.length > Number(value.requestedCount) ||
@@ -153,6 +195,31 @@ export function saveRequest(value) {
     text(failure.externalId, 256);
     text(failure.code, 100);
   }
+}
+/** @param {unknown} value @returns {asserts value is import('./types.ts').PreparationRequest} */
+export function preparationRequest(value) {
+  object(value);
+  sourceId(value.sourceId);
+  date(value.attemptedAt);
+  if (!Array.isArray(value.issues)) throw new Error("LIBRARY_INVALID");
+  for (const issue of value.issues) text(issue, MAX_PREPARATION_ISSUE_CHARACTERS);
+  const hasValidators = Object.hasOwn(value, "validators");
+  if (hasValidators) feedValidators(value.validators);
+  const hasNotModified = Object.hasOwn(value, "notModified");
+  if (hasNotModified) id(value.notModified);
+  const hasSave = Object.hasOwn(value, "save");
+  if (hasNotModified && hasSave) throw new Error("LIBRARY_INVALID");
+  if (hasSave) {
+    saveRequest(value.save);
+    if (value.save.batch.sourceId !== value.sourceId) throw new Error("LIBRARY_INVALID");
+  } else if (!hasNotModified && value.issues.length === 0) throw new Error("LIBRARY_INVALID");
+  if (
+    Object.keys(value).some(
+      (key) =>
+        !["sourceId", "attemptedAt", "issues", "save", "validators", "notModified"].includes(key),
+    )
+  )
+    throw new Error("LIBRARY_INVALID");
 }
 /** @param {unknown} value @returns {asserts value is import('./types.ts').SearchRequest} */
 export function searchRequest(value) {

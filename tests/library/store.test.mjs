@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { openContentLibrary } from "../../src/library/index.ts";
 import { SQLiteContentLibrary } from "../../src/library/store.ts";
 import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "../../src/sources/content-limits.mjs";
 
@@ -40,6 +41,15 @@ function request(items = [answer()], overrides = {}) {
     ...overrides,
   };
 }
+function preparation(save, overrides = {}) {
+  return {
+    sourceId: "sample",
+    attemptedAt: time,
+    issues: [],
+    ...(save ? { save } : {}),
+    ...overrides,
+  };
+}
 async function setup(t) {
   const root = await mkdtemp(join(tmpdir(), "pi-current-library-"));
   const store = new SQLiteContentLibrary(root);
@@ -54,6 +64,7 @@ test("empty reads are lazy and offline; save survives close/reopen with provenan
   const { root, store, path } = await setup(t);
   assert.deepEqual(await store.search({ query: "推荐" }), []);
   assert.equal(await store.latest(), undefined);
+  assert.equal(await store.prepared("sample"), undefined);
   await assert.rejects(stat(path), { code: "ENOENT" });
   const req = request();
   const saved = await store.save(req);
@@ -67,6 +78,267 @@ test("empty reads are lazy and offline; save survives close/reopen with provenan
   const item = await reopened.read({ itemId: saved.items[0].itemId });
   assert.equal(item.text, req.batch.items[0].text);
   assert.equal(item.discoveredAt, time);
+});
+
+test("prepared sources persist the latest attempt and retain the last successful batch after failure", async (t) => {
+  const { root, store } = await setup(t);
+  const firstFailure = await store.prepare(
+    preparation(undefined, { issues: ["feed unavailable"] }),
+  );
+  assert.deepEqual(firstFailure.issues, ["feed unavailable"]);
+  assert.equal(firstFailure.batch, undefined);
+
+  const successful = await store.prepare(preparation(request()));
+  assert.equal(successful.issues.length, 0);
+  assert.equal(successful.batch.items[0].externalId, "1");
+
+  const failed = await store.prepare(
+    preparation(undefined, {
+      attemptedAt: "2026-10-24T00:00:00.000Z",
+      issues: ["feed request timed out"],
+    }),
+  );
+  assert.equal(failed.attemptedAt, "2026-10-24T00:00:00.000Z");
+  assert.deepEqual(failed.issues, ["feed request timed out"]);
+  assert.equal(failed.batch.id, successful.batch.id);
+  assert.equal(failed.batch.items[0].itemId, successful.batch.items[0].itemId);
+
+  await store.close();
+  const reopened = new SQLiteContentLibrary(root);
+  t.after(() => reopened.close());
+  assert.deepEqual(await reopened.prepared("sample"), failed);
+});
+
+test("304 updates preparation metadata and validators while preserving the saved batch", async (t) => {
+  const { root, store } = await setup(t);
+  const saved = await store.prepare(
+    preparation(request(), {
+      validators: {
+        url: "https://example.com/feed.xml",
+        etag: '"feed-v1"',
+        lastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+      },
+    }),
+  );
+  const unchanged = await store.prepare(
+    preparation(undefined, {
+      attemptedAt: "2026-10-24T00:00:00.000Z",
+      notModified: saved.batch.id,
+      validators: {
+        url: "https://example.com/feed.xml",
+        etag: '"feed-v1"',
+        lastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+      },
+    }),
+  );
+  assert.equal(unchanged.attemptedAt, "2026-10-24T00:00:00.000Z");
+  assert.deepEqual(unchanged.issues, []);
+  assert.equal(unchanged.batch.id, saved.batch.id);
+  assert.equal(unchanged.batch.items[0].itemId, saved.batch.items[0].itemId);
+  assert.deepEqual(unchanged.validators, {
+    url: "https://example.com/feed.xml",
+    etag: '"feed-v1"',
+    lastModified: "Wed, 21 Oct 2015 07:28:00 GMT",
+  });
+
+  const failed = await store.prepare(
+    preparation(undefined, {
+      attemptedAt: "2026-10-25T00:00:00.000Z",
+      issues: ["feed timed out"],
+    }),
+  );
+  assert.deepEqual(failed.validators, unchanged.validators);
+  assert.equal(failed.batch.id, saved.batch.id);
+
+  await store.close();
+  const reopened = new SQLiteContentLibrary(root);
+  t.after(() => reopened.close());
+  assert.deepEqual(await reopened.prepared("sample"), failed);
+});
+
+test("a 304 for an older batch cannot replace validators after a newer batch is saved", async (t) => {
+  const { store } = await setup(t);
+  const first = await store.prepare(
+    preparation(request(), {
+      validators: { url: "https://example.com/feed.xml", etag: '"v1"' },
+    }),
+  );
+  const newer = await store.prepare(
+    preparation(request([answer({ externalId: "v2" })]), {
+      attemptedAt: "2026-10-24T00:00:00.000Z",
+      validators: { url: "https://example.com/feed.xml", etag: '"v2"' },
+    }),
+  );
+  const late304 = await store.prepare(
+    preparation(undefined, {
+      attemptedAt: "2026-10-25T00:00:00.000Z",
+      notModified: first.batch.id,
+      validators: { url: "https://example.com/feed.xml", etag: '"v1-late"' },
+    }),
+  );
+  assert.deepEqual(late304, newer);
+  assert.equal(late304.batch.id, newer.batch.id);
+  assert.deepEqual(late304.validators, newer.validators);
+});
+
+test("304 without a successful batch leaves the latest failed attempt unchanged", async (t) => {
+  const { store } = await setup(t);
+  const failed = await store.prepare(preparation(undefined, { issues: ["feed unavailable"] }));
+  await assert.rejects(
+    store.prepare(
+      preparation(undefined, {
+        attemptedAt: "2026-10-24T00:00:00.000Z",
+        notModified: randomUUID(),
+      }),
+    ),
+    /LIBRARY_INVALID/,
+  );
+  assert.deepEqual(await store.prepared("sample"), failed);
+});
+
+test("successful preparation replaces validators and clears them when omitted", async (t) => {
+  const { store } = await setup(t);
+  const withValidator = await store.prepare(
+    preparation(request(), { validators: { url: "https://example.com/feed.xml", etag: '"v1"' } }),
+  );
+  assert.deepEqual(withValidator.validators, {
+    url: "https://example.com/feed.xml",
+    etag: '"v1"',
+  });
+
+  const refreshed = await store.prepare(
+    preparation(request([answer({ externalId: "updated" })]), {
+      attemptedAt: "2026-10-24T00:00:00.000Z",
+    }),
+  );
+  assert.equal(refreshed.batch.items[0].externalId, "updated");
+  assert.equal(refreshed.validators, undefined);
+});
+
+test("a late older preparation cannot replace a newer snapshot", async (t) => {
+  const { store, path } = await setup(t);
+  const newer = await store.prepare(
+    preparation(request(), { attemptedAt: "2026-10-24T00:00:00.000Z" }),
+  );
+  const stale = await store.prepare(
+    preparation(request([answer({ externalId: "stale" })]), {
+      attemptedAt: "2026-10-23T00:00:00.000Z",
+    }),
+  );
+  assert.deepEqual(stale, newer);
+  assert.deepEqual(await store.prepared("sample"), newer);
+
+  const db = new DatabaseSync(path);
+  try {
+    assert.equal(db.prepare("SELECT count(*) AS n FROM collection_runs").get().n, 1);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM items").get().n, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test("successful empty preparation replaces its snapshot and manual saves leave the pointer alone", async (t) => {
+  const { store } = await setup(t);
+  const first = await store.prepare(preparation(request()));
+  const manual = await store.save(request([answer({ externalId: "manual" })]));
+  assert.equal(manual.items[0].externalId, "manual");
+  assert.equal((await store.prepared("sample")).batch.id, first.batch.id);
+
+  const emptyRequest = request([], {
+    requestedCount: 0,
+    batch: {
+      id: randomUUID(),
+      sourceId: "sample",
+      collectedAt: time,
+      items: [],
+      failures: [],
+      stopReason: "complete",
+    },
+  });
+  const empty = await store.prepare(preparation(emptyRequest));
+  assert.notEqual(empty.batch.id, first.batch.id);
+  assert.deepEqual(empty.batch.items, []);
+  assert.equal((await store.prepared("sample")).batch.id, empty.batch.id);
+});
+
+test("prepared batches reuse collection identities and versions without duplicating content", async (t) => {
+  const { store, path } = await setup(t);
+  const first = await store.prepare(preparation(request()));
+  const second = await store.prepare(preparation(request()));
+  assert.equal(second.batch.items[0].itemId, first.batch.items[0].itemId);
+  assert.equal(second.batch.items[0].versionId, first.batch.items[0].versionId);
+
+  const db = new DatabaseSync(path);
+  try {
+    assert.equal(db.prepare("SELECT count(*) AS n FROM items").get().n, 1);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM item_versions").get().n, 1);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM collection_runs").get().n, 2);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM collection_items").get().n, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test("prepared feed batches accept more than ten entries and high safe positions", async (t) => {
+  const { store } = await setup(t);
+  const items = Array.from({ length: 11 }, (_, index) =>
+    answer({
+      externalId: String(index + 1),
+      url: `https://example.com/article/${index + 1}`,
+      observedPosition: index === 10 ? 10001 : index + 1,
+    }),
+  );
+  const save = request(items, { requestedCount: items.length });
+  const prepared = await store.prepare(preparation(save));
+  assert.equal(prepared.batch.items.length, 11);
+  assert.equal(prepared.batch.items[10].observedPosition, 10001);
+  assert.equal((await store.prepared("sample")).batch.items.length, 11);
+});
+
+test("preparation validation rejects mismatched sources and ambiguous failure records", async (t) => {
+  const { store, path } = await setup(t);
+  await assert.rejects(
+    store.prepare(preparation(request(), { sourceId: "other" })),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(store.prepare(preparation(undefined)), /LIBRARY_INVALID/);
+  await assert.rejects(
+    store.prepare(preparation(undefined, { attemptedAt: "not-a-date-at-all", issues: ["failed"] })),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(
+    store.prepare(
+      preparation(request(), {
+        validators: { url: "file:///etc/feed.xml", etag: '"invalid scheme"' },
+      }),
+    ),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(
+    store.prepare(
+      preparation(request(), {
+        validators: { url: "https://example.com/feed.xml", etag: '"value"\r\nX-Test: bad' },
+      }),
+    ),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(
+    store.prepare(preparation(undefined, { notModified: randomUUID() })),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(
+    store.prepare(preparation(request(), { notModified: randomUUID() })),
+    /LIBRARY_INVALID/,
+  );
+  await assert.rejects(stat(path), { code: "ENOENT" });
+});
+
+test("the public library API exposes preparation without changing API version", () => {
+  const library = openContentLibrary({ root: "/tmp/pi-current-prepared-api" });
+  assert.equal(library.apiVersion, 2);
+  assert.equal(typeof library.prepare, "function");
+  assert.equal(typeof library.prepared, "function");
+  return library.close();
 });
 
 test("deduplication, immutable old versions, idempotent runs and partial batches", async (t) => {
@@ -158,6 +430,61 @@ test("save is atomic when SQLite rejects a later answer; earlier batch remains",
   );
   assert.equal((await store.read({ itemId: saved.items[0].itemId })).text, answer().text);
   assert.equal((await store.latest()).id, saved.id);
+});
+
+test("preparation saves its batch and pointer atomically", async (t) => {
+  const { store, path } = await setup(t);
+  const previous = await store.save(request());
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TRIGGER fixture_preparation_fault BEFORE INSERT ON source_preparations BEGIN
+    SELECT RAISE(ABORT, 'synthetic preparation failure');
+    END`);
+  db.close();
+
+  await assert.rejects(
+    store.prepare(preparation(request([answer({ externalId: "new" })]))),
+    /LIBRARY_STORAGE_ERROR/,
+  );
+  assert.equal((await store.latest()).id, previous.id);
+  assert.equal(await store.prepared("sample"), undefined);
+
+  const check = new DatabaseSync(path);
+  try {
+    assert.equal(check.prepare("SELECT count(*) AS n FROM items").get().n, 1);
+    assert.equal(check.prepare("SELECT count(*) AS n FROM collection_runs").get().n, 1);
+    assert.equal(check.prepare("SELECT count(*) AS n FROM collection_items").get().n, 1);
+  } finally {
+    check.close();
+  }
+});
+
+test("cancelling preparation reports an uncertain write and rolls back its batch", async (t) => {
+  const { store, path } = await setup(t);
+  const previous = await store.prepare(preparation(request()));
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TRIGGER fixture_slow_preparation AFTER UPDATE ON source_preparations BEGIN
+    SELECT sum(x) FROM (WITH RECURSIVE slow(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM slow WHERE x<1000000000) SELECT x FROM slow);
+    END`);
+  const controller = new AbortController();
+  const pending = store.prepare(
+    preparation(request([answer({ externalId: "new" })]), {
+      attemptedAt: "2026-10-24T00:00:00.000Z",
+    }),
+    controller.signal,
+  );
+  const timer = setTimeout(() => controller.abort(), 150);
+  try {
+    await assert.rejects(pending, /LIBRARY_WRITE_UNCERTAIN/);
+  } finally {
+    clearTimeout(timer);
+    db.close();
+  }
+
+  const cleanup = new DatabaseSync(path);
+  cleanup.exec("DROP TRIGGER fixture_slow_preparation");
+  cleanup.close();
+  assert.equal((await store.prepared("sample")).batch.id, previous.batch.id);
+  assert.equal((await store.latest()).id, previous.batch.id);
 });
 
 test("corrupt and future databases fail closed without replacement; missing removal stays lazy", async (t) => {

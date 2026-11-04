@@ -26,7 +26,7 @@ CREATE VIRTUAL TABLE library_fts USING fts5(title, body, version_id UNINDEXED, t
 PRAGMA user_version=1;
 `;
 
-export const schema = `
+const schemaV2 = `
 CREATE TABLE items (
  id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, latest_version_id TEXT,
  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(source, external_id)
@@ -52,6 +52,38 @@ CREATE INDEX observations_by_item ON collection_items(item_id);
 CREATE INDEX versions_by_item ON item_versions(item_id);
 CREATE VIRTUAL TABLE library_fts USING fts5(title, summary, body, version_id UNINDEXED, tokenize='trigram');
 PRAGMA user_version=2;
+`;
+
+export const schema = `
+CREATE TABLE items (
+ id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT NOT NULL, latest_version_id TEXT,
+ first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(source, external_id)
+) STRICT;
+CREATE TABLE item_versions (
+ id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+ hash TEXT NOT NULL, payload TEXT NOT NULL, title TEXT NOT NULL, body TEXT,
+ UNIQUE(item_id, hash)
+) STRICT;
+CREATE TABLE collection_runs (
+ id TEXT PRIMARY KEY, source TEXT NOT NULL, hash TEXT NOT NULL, requested_count INTEGER NOT NULL,
+ started_at TEXT NOT NULL, completed_at TEXT NOT NULL, saved_count INTEGER NOT NULL,
+ failures TEXT NOT NULL, stop_reason TEXT NOT NULL
+) STRICT;
+CREATE TABLE collection_items (
+ run_id TEXT NOT NULL REFERENCES collection_runs(id) ON DELETE CASCADE,
+ item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+ version_id TEXT NOT NULL REFERENCES item_versions(id) ON DELETE CASCADE,
+ discovered_at TEXT NOT NULL, retrieved_at TEXT, position INTEGER NOT NULL,
+ PRIMARY KEY(run_id, item_id)
+) STRICT;
+CREATE INDEX observations_by_item ON collection_items(item_id);
+CREATE INDEX versions_by_item ON item_versions(item_id);
+CREATE VIRTUAL TABLE library_fts USING fts5(title, summary, body, version_id UNINDEXED, tokenize='trigram');
+CREATE TABLE source_preparations (
+ source TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, issues TEXT NOT NULL, validators TEXT,
+ run_id TEXT REFERENCES collection_runs(id) ON DELETE SET NULL
+) STRICT;
+PRAGMA user_version=3;
 `;
 
 const itemVersionsV2 = `
@@ -84,10 +116,25 @@ export function initialize(db, create) {
     validateSchema(db, schemaV1);
     migrateV1ToV2(db);
     db.exec("PRAGMA user_version=2");
-  } else if (version !== 2) throw new Error("LIBRARY_SCHEMA");
+    validateSchema(db, schemaV2);
+    migrateV2ToV3(db);
+    db.exec("PRAGMA user_version=3");
+  } else if (version === 2) {
+    validateSchema(db, schemaV2);
+    migrateV2ToV3(db);
+    db.exec("PRAGMA user_version=3");
+  } else if (version !== 3) throw new Error("LIBRARY_SCHEMA");
 
   validateSchema(db, schema);
   return true;
+}
+
+/** @param {import('node:sqlite').DatabaseSync} db */
+function migrateV2ToV3(db) {
+  db.exec(`CREATE TABLE source_preparations (
+    source TEXT PRIMARY KEY, attempted_at TEXT NOT NULL, issues TEXT NOT NULL, validators TEXT,
+    run_id TEXT REFERENCES collection_runs(id) ON DELETE SET NULL
+  ) STRICT`);
 }
 
 /** @param {import('node:sqlite').DatabaseSync} db @param {string} definition */

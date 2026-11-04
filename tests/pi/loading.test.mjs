@@ -64,11 +64,10 @@ test("Pi discovers the package from another directory and reloads it without dup
         "current_library_remove",
         "current_library_search",
         "current_reading_find",
-        "current_source_import",
         "current_web_read",
         "current_web_search",
       ],
-      `${phase}: Pi exposes seven reading, direct import, library and public web tools`,
+      `${phase}: Pi exposes six prepared reading, library and public web tools`,
     );
     const read = tools.get("current_web_read").definition;
     assert.deepEqual(
@@ -76,20 +75,14 @@ test("Pi discovers the package from another directory and reloads it without dup
       ["maxCharacters", "url"],
       `${phase}: public page reading has no source or browser routing`,
     );
-    const importTool = tools.get("current_source_import").definition;
-    assert.deepEqual(Object.keys(importTool.parameters.properties).sort(), ["limit", "url"]);
-    assert.equal(importTool.prepareArguments, undefined);
-    assert.match(importTool.promptGuidelines.join(" "), /current.*(reading|retrieval).*task/i);
-    assert.match(importTool.promptGuidelines.join(" "), /choose|select/i);
-    assert.match(importTool.promptGuidelines.join(" "), /feed URL/i);
-    assert.doesNotMatch(
-      importTool.promptGuidelines.join(" "),
-      /Do not use it for recommendations/i,
-    );
-    assert.equal(tools.has("current_sources"), false);
-    assert.deepEqual([...extensions[0].commands.keys()], ["source"]);
     const reading = tools.get("current_reading_find").definition;
     assert.deepEqual(Object.keys(reading.parameters.properties).sort(), ["limit", "terms"]);
+    assert.match(reading.description, /prepared/i);
+    assert.match(reading.promptGuidelines.join(" "), /current user intent/i);
+    assert.match(reading.promptGuidelines.join(" "), /offline/i);
+    assert.equal(tools.has("current_source_import"), false);
+    assert.equal(tools.has("current_sources"), false);
+    assert.deepEqual([...extensions[0].commands.keys()], ["source"]);
     assert.equal(
       extensions[0].commands.has("sources"),
       false,

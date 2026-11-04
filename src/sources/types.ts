@@ -1,5 +1,7 @@
 import type { LibraryCandidate } from "../library/types.ts";
 
+export type FeedValidators = { url: string; etag?: string; lastModified?: string };
+
 export type SourceItem = {
   sourceId: string;
   externalId: string;
@@ -30,8 +32,13 @@ export type Batch = SourceBatch & {
   collectedAt: string;
 };
 
-/** Feed parsing returns content; the import workflow assigns its source identity. */
+/** Feed parsing returns content; source preparation assigns its stable identity. */
 export type SourceEntry = Omit<SourceItem, "sourceId"> | Omit<LibraryCandidate, "sourceId">;
-export type SourceInput = { url: string; limit: number };
+export type SourceInput = { url: string; validators?: FeedValidators };
 export type SourceIssue = { index: number; message: string };
-export type SourceFetchResult = { items: SourceEntry[]; issues: SourceIssue[] };
+export type SourceFetchResult = {
+  items: SourceEntry[];
+  issues: SourceIssue[];
+  validators?: FeedValidators;
+  notModified?: boolean;
+};

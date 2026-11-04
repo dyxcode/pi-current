@@ -13,14 +13,16 @@ export function openContentLibrary(options: OpenContentLibraryOptions = {}): Con
   });
 }
 
+export type { Batch, FeedValidators, SourceBatch, SourceItem } from "../sources/types.js";
 export type {
   ContentLibrary,
+  LibraryBatch,
   LibraryCandidate,
   LibraryContent,
-  LibraryBatch,
   LibraryItem,
+  PreparationRequest,
+  PreparedSource,
   ReadRequest,
   SaveRequest,
   SearchRequest,
 } from "./types.js";
-export type { Batch, SourceBatch, SourceItem } from "../sources/types.js";

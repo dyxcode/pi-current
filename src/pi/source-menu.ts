@@ -24,6 +24,7 @@ async function addSource(
   context: ExtensionCommandContext,
   sources: ReadingSource[],
   root: string,
+  onChanged: () => Promise<void>,
 ): Promise<"continue" | "cancelled"> {
   const name = await context.ui.input("Source name", "For example, MIT Research");
   if (name === undefined) return "cancelled";
@@ -32,6 +33,7 @@ async function addSource(
 
   try {
     await writeSources(root, [...sources, { name, url, enabled: true }]);
+    await onChanged();
     const safeName = cleanDisplayText(name).replace(/\s+/gu, " ").trim() || "source";
     context.ui.notify(`Added ${safeName} to reading sources.`, "info");
   } catch (error) {
@@ -41,7 +43,11 @@ async function addSource(
 }
 
 /** Register the local source editor at the singular /source command. */
-export function registerSourceMenu(pi: ExtensionAPI, root: string): void {
+export function registerSourceMenu(
+  pi: ExtensionAPI,
+  root: string,
+  onChanged: () => Promise<void> = async () => {},
+): void {
   pi.registerCommand("source", {
     description: "Manage feeds available for reading discovery",
     handler: async (_args: string, context: ExtensionCommandContext): Promise<void> => {
@@ -73,7 +79,7 @@ export function registerSourceMenu(pi: ExtensionAPI, root: string): void {
         if (selectedLabel === undefined) return;
 
         if (selectedLabel === addSourceLabel) {
-          const result = await addSource(context, sources, root);
+          const result = await addSource(context, sources, root, onChanged);
           if (result === "cancelled") return;
           continue;
         }
@@ -102,6 +108,7 @@ export function registerSourceMenu(pi: ExtensionAPI, root: string): void {
 
         try {
           await writeSources(root, updated);
+          await onChanged();
           const result =
             action === "Remove source"
               ? "Removed"

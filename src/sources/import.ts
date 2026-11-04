@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import type { ContentLibrary, LibraryBatch, LibraryContent } from "../library/types.ts";
+import { createHash } from "node:crypto";
+import type { LibraryContent } from "../library/types.ts";
 import { answer } from "../library/validation.mjs";
 import { ReadError } from "../web/read-types.ts";
 import { fetchFeed as readFeed } from "./feed.ts";
@@ -9,10 +9,7 @@ const fetchTimeoutMs = 30_000;
 const maxMetadataCharacters = 4_096;
 const maxUrlCharacters = 8_192;
 
-export type ImportInput = { url: string; limit?: number };
-export type ImportResult = { sourceId: string; batch: LibraryBatch; issues: SourceIssue[] };
-
-/** Canonicalize a configured feed URL using the same rules as direct import. */
+/** Canonicalize a configured feed URL before deriving its stable source identity. */
 export function normalizeFeedUrl(value: string): string {
   if (typeof value !== "string" || value.length > maxUrlCharacters) {
     throw new Error("Invalid source input: url must be an HTTP or HTTPS URL.");
@@ -36,21 +33,6 @@ export function normalizeFeedUrl(value: string): string {
     );
   }
   return url.href;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function normalizeImportInput(value: ImportInput): SourceInput {
-  if (!isRecord(value)) {
-    throw new Error("Invalid source input: expected an object with url and optional limit.");
-  }
-  const limit = value.limit === undefined ? 5 : value.limit;
-  if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 10) {
-    throw new Error("Invalid source input: limit must be an integer from 1 to 10.");
-  }
-  return { url: normalizeFeedUrl(value.url), limit };
 }
 
 export function sourceIdFor(url: string): string {
@@ -128,71 +110,4 @@ export async function fetchFeedWithDeadline(
     }
     throw error;
   }
-}
-
-/** Save a prepared feed batch through the library, preserving the source identity. */
-export async function saveFeedBatch(
-  library: Pick<ContentLibrary, "save">,
-  input: {
-    sourceId: string;
-    requestedCount: number;
-    startedAt: string;
-    items: LibraryContent[];
-    issues: SourceIssue[];
-    stopReason: string;
-  },
-  signal?: AbortSignal,
-): Promise<LibraryBatch> {
-  const firstIssue = input.issues[0];
-  return library.save(
-    {
-      requestedCount: input.requestedCount,
-      startedAt: input.startedAt,
-      batch: {
-        id: randomUUID(),
-        sourceId: input.sourceId,
-        collectedAt: new Date().toISOString(),
-        items: input.items,
-        failures: firstIssue
-          ? [{ externalId: String(firstIssue.index), code: "SOURCE_ISSUE" }]
-          : [],
-        stopReason: input.stopReason,
-      },
-    },
-    signal,
-  );
-}
-
-/** Fetch the built-in feed once and save its valid entries through the library API. */
-export async function importFeed(
-  library: Pick<ContentLibrary, "save">,
-  inputValue: ImportInput,
-  signal?: AbortSignal,
-): Promise<ImportResult> {
-  const input = normalizeImportInput(inputValue);
-  if (signal?.aborted) throw new Error("CANCELLED");
-
-  const sourceId = sourceIdFor(input.url);
-  const startedAt = new Date().toISOString();
-  const fetched = await fetchFeedWithDeadline(input, signal);
-  if (signal?.aborted) throw new Error("CANCELLED");
-
-  const { items, issues } = prepareFeedEntries(fetched, sourceId, input.url);
-  if (signal?.aborted) throw new Error("CANCELLED");
-
-  const batch = await saveFeedBatch(
-    library,
-    {
-      sourceId,
-      requestedCount: input.limit,
-      startedAt,
-      items,
-      issues,
-      stopReason:
-        items.length >= input.limit ? "limit" : issues.length > 0 ? "partial" : "complete",
-    },
-    signal,
-  );
-  if (signal?.aborted) throw new Error("CANCELLED");
-  return { sourceId, batch, issues };
 }

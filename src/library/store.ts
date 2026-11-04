@@ -3,11 +3,20 @@ import type {
   ContentLibrary,
   LibraryBatch,
   LibraryItem,
+  PreparationRequest,
+  PreparedSource,
   ReadRequest,
   SaveRequest,
   SearchRequest,
 } from "./types.ts";
-import { id, readRequest, saveRequest, searchRequest } from "./validation.mjs";
+import {
+  id,
+  preparationRequest,
+  readRequest,
+  saveRequest,
+  searchRequest,
+  sourceId,
+} from "./validation.mjs";
 
 /** Lazy SQLite adapter. Child processes own connections/transactions; the Pi thread never runs SQL.
  * Process isolation lets cancellation stop native SQLite statements, unlike Worker.terminate().
@@ -23,6 +32,14 @@ export class SQLiteContentLibrary implements ContentLibrary {
   async save(request: SaveRequest, signal?: AbortSignal): Promise<LibraryBatch> {
     saveRequest(request);
     return this.run("save", request, signal);
+  }
+  async prepare(request: PreparationRequest, signal?: AbortSignal): Promise<PreparedSource> {
+    preparationRequest(request);
+    return this.run("prepare", request, signal);
+  }
+  async prepared(source: string, signal?: AbortSignal): Promise<PreparedSource | undefined> {
+    sourceId(source);
+    return this.run("prepared", source, signal);
   }
   async latest(sourceId?: string, signal?: AbortSignal): Promise<LibraryBatch | undefined> {
     return this.run("latest", sourceId, signal);
@@ -68,7 +85,8 @@ export class SQLiteContentLibrary implements ContentLibrary {
         try {
           return await new Promise<T>((resolve, reject) => {
             const fail = (reason: string) => reject(new Error(reason));
-            const writing = operation === "save" || operation === "remove";
+            const writing =
+              operation === "save" || operation === "prepare" || operation === "remove";
             abort = () => fail(writing ? "LIBRARY_WRITE_UNCERTAIN" : "LIBRARY_CANCELLED");
             signal?.addEventListener("abort", abort, { once: true });
             const startDeadline = () =>

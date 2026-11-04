@@ -1,36 +1,24 @@
 import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import { SQLiteContentLibrary } from "../library/store.ts";
 import type { ContentLibrary, LibraryItem } from "../library/types.ts";
 import { MAX_ARTICLE_BYTES } from "../sources/content-limits.mjs";
-import { importFeed } from "../sources/import.ts";
 import { dataRoot } from "../sources/paths.ts";
-import type { SourceIssue } from "../sources/types.ts";
 import { localResultSchema, receipt, registerLocalCards, cleanDisplayText } from "./cards.ts";
 import { openLocalReader } from "./reader.ts";
-import { discoverReading } from "../reading/discover.ts";
-import { readSources } from "../reading/sources.ts";
+import { selectPreparedReading } from "../reading/discover.ts";
+import { PreparationRuntime } from "../reading/runtime.ts";
 import { registerSourceMenu } from "./source-menu.ts";
 
 const itemIdSchema = Type.String({
   pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
 });
 const sourceIdSchema = Type.String({ pattern: "^[a-z][a-z0-9-]{0,63}$" });
-const importArgumentsSchema = Type.Object(
-  {
-    url: Type.String({ description: "RSS or Atom feed URL for the current task." }),
-    limit: Type.Optional(
-      Type.Integer({ description: "Maximum entries to save, from 1 to 10. Defaults to 5." }),
-    ),
-  },
-  { additionalProperties: false },
-);
-
 type Operation = { controller: AbortController; signal: AbortSignal };
-
-function localIssueLines(issues: SourceIssue[]) {
-  return issues.slice(0, 20).map(({ index, message }) => `Entry ${index}: ${message}`);
-}
 
 function savedReferences(items: LibraryItem[]) {
   return items.slice(0, 20).map(({ itemId, versionId }) => ({ itemId, versionId }));
@@ -53,24 +41,46 @@ export function registerSources(
     if (run.signal.aborted || run.controller !== sessionController) throw new Error("CANCELLED");
   };
 
-  pi.on("session_start", () => {
+  let ui: ExtensionContext["ui"] | undefined;
+  const preparation = new PreparationRuntime(
+    root,
+    library,
+    (result) => {
+      const problems = result.feeds.filter((feed) => feed.issues.length > 0).length;
+      ui?.setStatus(
+        "current-preparation",
+        `Checked ${result.refreshed} source(s); processed ${result.processed} article(s).${problems ? ` ${problems} source(s) reported issues.` : ""}`,
+      );
+    },
+    (error) => ui?.setStatus("current-preparation", `Preparation failed: ${safeError(error)}`),
+  );
+  pi.on("session_start", async (_event, context) => {
     sessionController.abort();
+    await preparation.stop();
     sessionController = new AbortController();
+    ui = context.hasUI ? context.ui : undefined;
+    preparation.start();
   });
-  pi.on("session_shutdown", () => sessionController.abort());
-  registerSourceMenu(pi, root);
+  pi.on("session_shutdown", async () => {
+    sessionController.abort();
+    await preparation.stop();
+    ui?.setStatus("current-preparation", undefined);
+    ui = undefined;
+  });
+  registerSourceMenu(pi, root, () => preparation.sourcesChanged());
 
   pi.registerTool({
     name: "current_reading_find",
     label: "Find articles to read",
     description:
-      "Find and save articles from the enabled RSS/Atom sources managed with /source. Searches current feed titles and summaries, then shows selected articles locally.",
+      "Recommend articles prepared from the enabled RSS/Atom sources managed with /source. Checks enabled sources for changes before selecting and showing articles locally.",
     promptSnippet:
-      "Find articles for the current reading request from enabled feeds and save the selection.",
+      "Recommend five articles by default from enabled sources, including requests for today's recommendations.",
     promptGuidelines: [
       "For a topic request, derive concise words or phrases from the current user intent, including terms in the sources' language when useful. Matching is literal against titles and summaries.",
-      "For mixed reading without a specific topic, omit terms to select across sources. The default result count is five.",
-      "Keep library-only requests offline by using current_library_search. Discovery fetches current feeds and does not search their full historical archives.",
+      "For mixed reading or today's recommendations without a specific topic, omit terms. Today describes the recommendation request, not a topic keyword or a publication-date filter. The default result count is five.",
+      "Publication-date filtering is not supported. Do not describe this selection as articles published today.",
+      "Keep library-only requests offline by using current_library_search. Recommendations revalidate prepared current feed entries and do not search publishers' full archives.",
       "Results are displayed in ranked local cards. References have the same order, so use the corresponding reference when the user asks to open a result. Article text stays local; do not infer an article's argument from a reference.",
     ],
     parameters: Type.Object(
@@ -81,7 +91,7 @@ export function registerSources(
           }),
         ),
         limit: Type.Optional(
-          Type.Integer({ description: "Articles to select, from 1 to 10. Defaults to 5." }),
+          Type.Integer({ minimum: 1, maximum: 10, default: 5, description: "Articles to select." }),
         ),
       },
       { additionalProperties: false },
@@ -89,11 +99,11 @@ export function registerSources(
     outputSchema: localResultSchema,
     async execute(_toolCallId, params, signal) {
       const run = operation(signal);
-      let result: Awaited<ReturnType<typeof discoverReading>>;
+      let result: ReturnType<typeof selectPreparedReading>;
       try {
-        const sources = await readSources(root);
+        const prepared = await preparation.ensure(run.signal);
         current(run);
-        result = await discoverReading(library, sources, params, run.signal);
+        result = selectPreparedReading(prepared, params);
         current(run);
       } catch (error) {
         current(run);
@@ -110,8 +120,8 @@ export function registerSources(
         );
       const count = result.items.length;
       let message = count
-        ? `Saved ${count} selected article(s) to the local library. References follow the displayed reading order.`
-        : "No matching articles were saved from the enabled feeds.";
+        ? `Selected ${count} prepared article(s) from the local library. References follow the displayed reading order.`
+        : "No matching prepared articles are available from the enabled sources.";
       try {
         for (const [index, selected] of result.items.entries()) {
           itemCard(selected.item, {
@@ -135,66 +145,6 @@ export function registerSources(
         status: result.issues.length ? (count ? "partial" : "failed") : count ? "saved" : "empty",
         references: savedReferences(result.items.map(({ item }) => item)),
         ...(result.issues.length ? { sourceIssues: result.issues } : {}),
-      });
-    },
-  });
-
-  pi.registerTool({
-    name: "current_source_import",
-    label: "Import and save feed content",
-    description:
-      "Fetch and save items from one RSS or Atom feed that serves the user's current task. The agent may choose a relevant feed URL when it helps fulfill the request.",
-    promptSnippet:
-      "Import one RSS or Atom feed to save feed-provided content for the current task.",
-    promptGuidelines: [
-      "Use when a current user request calls for feed content; choose an RSS or Atom feed URL when that helps fulfill the user's current reading or retrieval task.",
-      "Keep library-only requests offline. This call fetches and saves once; it does not create a subscription or refresh schedule.",
-      "Article bodies remain local. The receipt may include bounded feed-entry issue messages, but never the saved article body.",
-    ],
-    parameters: importArgumentsSchema,
-    outputSchema: localResultSchema,
-    async execute(_toolCallId, rawParams, signal, _onUpdate, ctx: ExtensionToolContext) {
-      const run = operation(signal);
-      let imported: Awaited<ReturnType<typeof importFeed>>;
-      try {
-        imported = await importFeed(library, rawParams, run.signal);
-        current(run);
-      } catch (error) {
-        current(run);
-        const message = safeError(error);
-        const detail = `Feed import failed: ${message}`;
-        if (ctx.hasUI) ctx.ui.notify(detail, "error");
-        return receipt("feed", 0, detail, { status: "failed" });
-      }
-      let cardFailure: unknown;
-      try {
-        for (const item of imported.batch.items) {
-          itemCard(item);
-        }
-        if (imported.issues.length) {
-          card("Source import issues", localIssueLines(imported.issues).join("\n"));
-        }
-      } catch (error) {
-        cardFailure = error;
-      }
-      const issues = imported.issues;
-      const hasIssues = issues.length > 0;
-      const count = imported.batch.items.length;
-      if (cardFailure !== undefined && ctx.hasUI)
-        ctx.ui.notify(
-          `Saved ${count} item(s), but a local card could not be shown: ${safeError(cardFailure)}`,
-          "warning",
-        );
-      const message =
-        cardFailure !== undefined
-          ? `Saved ${count} item(s), but a local card could not be shown: ${safeError(cardFailure)}`
-          : hasIssues
-            ? `Saved ${count} item(s) to the local library. Feed entry issues are included in this receipt and a local card.`
-            : `Saved ${count} item(s) to the local library.`;
-      return receipt(imported.sourceId, count, message, {
-        status: hasIssues ? "partial" : "saved",
-        references: savedReferences(imported.batch.items),
-        ...(hasIssues ? { issues } : {}),
       });
     },
   });

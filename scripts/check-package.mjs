@@ -50,9 +50,14 @@ try {
   const installed = join(root, "node_modules", "pi-current");
   await writeFile(
     join(root, "library-consumer.mts"),
-    `import { openContentLibrary, type LibraryCandidate, type LibraryContent, type SourceItem } from "pi-current/library";
+    `import { openContentLibrary, type LibraryCandidate, type LibraryContent, type SourceItem, type PreparationRequest, type PreparedSource } from "pi-current/library";
 const library = openContentLibrary({ root: "/tmp/pi-current-library-types" });
 const version: 2 = library.apiVersion;
+async function preparation(request: PreparationRequest) {
+  const saved: PreparedSource = await library.prepare(request);
+  const loaded: PreparedSource | undefined = await library.prepared(request.sourceId);
+  return [saved, loaded];
+}
 const body: SourceItem = {
   sourceId: "sample",
   externalId: "one",
@@ -86,7 +91,7 @@ function inspect(value: LibraryContent) {
 }
 // @ts-expect-error Candidate records do not satisfy the body-only source contract.
 const candidateAsSource: SourceItem = candidate;
-void [version, body, content, inspect, candidateAsSource];
+void [version, body, content, inspect, candidateAsSource, preparation];
 `,
   );
   const typeProject = join(root, "tsconfig.library-consumer.json");

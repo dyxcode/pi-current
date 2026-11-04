@@ -7,6 +7,7 @@ import { isIP, type LookupFunction } from "node:net";
 import type { Readable, Transform } from "node:stream";
 import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import ipaddr from "ipaddr.js";
+import type { FeedValidators } from "../sources/types.ts";
 import { abortable, abortFailure, MAX_PAGE_BYTES, ReadError } from "./read-types.ts";
 
 export type DownloadedPage = {
@@ -14,10 +15,17 @@ export type DownloadedPage = {
   finalUrl: string;
   contentType: string;
   partial: boolean;
+  validators?: FeedValidators;
+  notModified?: boolean;
 };
 type HttpReply = { status: number; headers: IncomingHttpHeaders; bytes: Buffer };
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export type PageRequestProfile = "page" | "feed";
+
+function responseValidator(value: string | undefined): string | undefined {
+  // Optional cache metadata must not prevent a valid feed body from being saved.
+  return value?.trim() && Buffer.byteLength(value, "utf8") <= 8_192 ? value : undefined;
+}
 
 function publicAddress(address: string): boolean {
   if (!isIP(address)) return false;
@@ -83,8 +91,10 @@ export function requestPage(
   address: LookupAddress,
   signal: AbortSignal,
   profile: PageRequestProfile = "page",
+  validators?: FeedValidators,
 ): Promise<HttpReply> {
   if (signal.aborted) return Promise.reject(abortFailure(signal));
+  const conditional = profile === "feed" && validators?.url === url.href ? validators : undefined;
   return new Promise((resolve, reject) => {
     let request: ClientRequest | undefined;
     let response: IncomingMessage | undefined;
@@ -122,12 +132,17 @@ export function requestPage(
                 : "text/html, text/plain, text/markdown;q=0.9",
             "accept-encoding": "gzip, deflate, br",
             "user-agent": "pi-current/0.0.0",
+            ...(conditional?.etag ? { "if-none-match": conditional.etag } : {}),
+            ...(conditional?.lastModified ? { "if-modified-since": conditional.lastModified } : {}),
           },
         },
         (incoming) => {
           response = incoming;
           const status = incoming.statusCode ?? 0;
-          if (REDIRECTS.has(status)) {
+          if (
+            REDIRECTS.has(status) ||
+            (status === 304 && (conditional?.etag || conditional?.lastModified))
+          ) {
             finish(undefined, { status, headers: incoming.headers, bytes: Buffer.alloc(0) });
             return;
           }
@@ -256,6 +271,7 @@ export async function fetchPublicPage(
   input: string,
   signal: AbortSignal,
   profile: PageRequestProfile = "page",
+  validators?: FeedValidators,
 ): Promise<DownloadedPage> {
   let url = new URL(input);
   const visited = new Set<string>();
@@ -266,13 +282,23 @@ export async function fetchPublicPage(
       throw new ReadError("REDIRECT_ERROR", "The website returned a redirect loop.");
     visited.add(url.href);
     const address = await resolvePublic(url, signal);
-    const reply = await requestPage(url, address, signal, profile);
+    const reply = await requestPage(url, address, signal, profile, validators);
     if (!REDIRECTS.has(reply.status)) {
+      const previous = reply.status === 304 ? validators : undefined;
+      const etag = responseValidator(reply.headers.etag) ?? previous?.etag;
+      const lastModified =
+        responseValidator(reply.headers["last-modified"]) ?? previous?.lastModified;
+      const returnedValidators =
+        profile === "feed" && (etag || lastModified)
+          ? { url: url.href, ...(etag ? { etag } : {}), ...(lastModified ? { lastModified } : {}) }
+          : undefined;
       return {
         bytes: reply.bytes,
         finalUrl: url.href,
-        contentType: reply.headers["content-type"]!,
+        contentType: reply.headers["content-type"] ?? "",
         partial: reply.status === 206,
+        ...(returnedValidators ? { validators: returnedValidators } : {}),
+        ...(reply.status === 304 ? { notModified: true } : {}),
       };
     }
     if (hop === 5) throw new ReadError("REDIRECT_ERROR", "The page exceeded five redirects.");

@@ -19,28 +19,29 @@ Search results include source links. Public page reading supports HTML, plain te
 
 Ask Pi for a mixed reading list or a topic:
 
+- “Show me today’s recommendations.”
 - “Find five articles across technology, humanities, and everyday life.”
 - “Find articles about urban life and loneliness.”
 
-Pi looks through the current entries from your enabled feeds, selects articles, and saves the selection to your library. Mixed reading alternates between sources. Topic requests match words or phrases in titles and summaries, with title matches first. This searches current feed entries, not each publisher's full archive.
+Pi prepares the current entries from your enabled feeds in the local library, then recommends five articles by default. Mixed reading alternates between sources, favoring recent entries within each source. Topic requests match words or phrases in titles and summaries, with title matches first. “Today’s recommendations” means a reading selection for today, not a filter for articles published today. The candidates come from current feed documents, not each publisher’s full archive.
 
-The local reading cards show results in order, with the source, publication date when available, and matched terms for topic requests. Ask “Open the second article” to read its saved text. Entries with only a summary show that summary and the original link. A source failure is reported alongside any saved results.
+The local reading cards show results in order, with the source, publication date when available, and matched terms for topic requests. Ask “Open the second article” to read its saved text. Entries with only a summary show that summary and the original link. A source failure is reported alongside available results. If an update fails, recommendations can use that source’s previous preparation with its preparation time shown in the source issue.
 
 ## Choose your sources
 
-Open `/source` in Pi to add a feed, enable or disable a source, or remove it from the list. Changes are saved automatically. Adding a source asks for its RSS/Atom URL and display name; content is fetched when you request reading discovery.
+Open `/source` in Pi to add a feed, enable or disable a source, or remove it from the list. Changes are saved automatically. Adding a source asks for its RSS/Atom URL and display name. Enabled sources are prepared automatically while Pi is running; disabling or removing one excludes it from subsequent preparation and recommendations.
 
 The default sources are [MIT Research](https://news.mit.edu/rss), [JSTOR Daily](https://daily.jstor.org/), and [Psyche](https://psyche.co/). They cover research and technology, humanities, and everyday psychology. Removing a source keeps its saved articles in your library.
 
-## Import a feed
+## Articles ready to read
 
-Pi can import an RSS 2.0 or Atom 1.0 feed you provide or select one for your current reading task:
+At session startup, pi-current prepares enabled sources in the background. A recommendation request checks those sources for changes before selecting articles, sharing preparation already in progress. Changes in `/source` update the background preparation. Standalone Pi does not poll sources while idle, and background work stops when Pi closes.
 
-- “Import 5 items from https://example.org/feed.xml.”
+Sources that provide ETag or Last-Modified headers are checked with conditional HTTP requests. An unchanged response reuses the persisted preparation without downloading and parsing another feed body. Sources without those headers are fetched normally. Prepared articles and HTTP validators survive Pi restarts.
 
-Feed import is built in. It fetches the feed and saves its entries to your library. It preserves feed-provided article text, summaries, and links. Summary-only entries remain marked as summaries; linked articles are not fetched automatically. Reimporting the same feed reuses existing items and retains changed versions.
+Preparation fetches each source’s current RSS 2.0 or Atom 1.0 document, cleans feed-provided HTML, and saves its valid entries. The status line reports processed article counts and source issues. Unchanged articles reuse existing versions; changed content retains version history. A successful empty feed replaces that source’s current candidate set, while a failed update preserves its previous successful preparation. The next recommendation request or session start can try a failed source again.
 
-The import result reports saved items and specific entry issues, including any skipped content. Feed content comes from its publisher; importing it does not establish that it matches the full article on the website.
+Feed-provided bodies, summaries, and links retain their actual content type. Linked article pages are not fetched automatically, and preparation does not generate model summaries. Articles stay in the local library; preparation does not automatically delete saved articles.
 
 ## Read your library
 
@@ -57,4 +58,4 @@ External source-module loading is no longer supported. Articles saved by earlier
 
 ## Direction
 
-Reading discovery currently uses title/summary matching and source diversity. Scheduled collection and learning from reading feedback are future work.
+Recommendations currently use title/summary matching and source diversity. Dwell scheduling and learning from reading feedback are future work.

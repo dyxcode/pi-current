@@ -7,7 +7,7 @@ import { mockPages, PUBLIC_IP } from "../helpers/page-harness.mjs";
 const atomMime = "application/atom+xml; charset=utf-8";
 const rssMime = "application/rss+xml; charset=utf-8";
 
-test("RSS 2 imports explicit content, keeps its summary, resolves xml:base, and honors the limit", async (t) => {
+test("RSS 2 parses all current entries, keeps content and summary separate, and resolves xml:base", async (t) => {
   const feed = `<?xml version="1.0"?>
     <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xml:base="/root/">
       <channel xml:base="entries/">
@@ -31,11 +31,11 @@ test("RSS 2 imports explicit content, keeps its summary, resolves xml:base, and 
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/news/feed.xml", limit: 1 },
+    { url: "https://feeds.example.test/news/feed.xml" },
     new AbortController().signal,
   );
 
-  assert.equal(result.items.length, 1);
+  assert.equal(result.items.length, 2);
   assert.deepEqual(result.issues, []);
   const [entry] = result.items;
   assert.equal(entry.externalId, "urn:report:one");
@@ -71,7 +71,7 @@ test("RSS description without content:encoded remains a summary-only candidate",
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/rss", limit: 5 },
+    { url: "https://feeds.example.test/rss" },
     new AbortController().signal,
   );
 
@@ -113,7 +113,7 @@ test("Atom inline XHTML is preserved, summaries stay separate, and src content i
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/atom/index.xml", limit: 5 },
+    { url: "https://feeds.example.test/atom/index.xml" },
     new AbortController().signal,
   );
 
@@ -159,7 +159,7 @@ test("entries without usable article URLs and duplicate identities or URLs are r
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/rss", limit: 10 },
+    { url: "https://feeds.example.test/rss" },
     new AbortController().signal,
   );
 
@@ -196,10 +196,7 @@ test("valid empty feeds return no entries or issues; RSS without a channel is ma
       }),
     });
     assert.deepEqual(
-      await fetchFeed(
-        { url: "https://feeds.example.test/atom", limit: 1 },
-        new AbortController().signal,
-      ),
+      await fetchFeed({ url: "https://feeds.example.test/atom" }, new AbortController().signal),
       { items: [], issues: [] },
     );
   });
@@ -212,7 +209,7 @@ test("valid empty feeds return no entries or issues; RSS without a channel is ma
       }),
     });
     await assert.rejects(
-      fetchFeed({ url: "https://feeds.example.test/rss", limit: 1 }, new AbortController().signal),
+      fetchFeed({ url: "https://feeds.example.test/rss" }, new AbortController().signal),
       /missing its channel/i,
     );
   });
@@ -230,7 +227,7 @@ test("invalid and oversized inline bodies are reported without clipping", async 
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/rss", limit: 3 },
+    { url: "https://feeds.example.test/rss" },
     new AbortController().signal,
   );
 
@@ -254,7 +251,7 @@ test("oversized inline HTML structure is bounded and reported per entry", async 
   });
 
   const result = await fetchFeed(
-    { url: "https://feeds.example.test/rss", limit: 3 },
+    { url: "https://feeds.example.test/rss" },
     new AbortController().signal,
   );
 
@@ -304,10 +301,7 @@ test("partial, malformed, and HTML error responses are rejected clearly", async 
         }),
       });
       await assert.rejects(
-        fetchFeed(
-          { url: "https://feeds.example.test/rss", limit: 1 },
-          new AbortController().signal,
-        ),
+        fetchFeed({ url: "https://feeds.example.test/rss" }, new AbortController().signal),
         scenario.error,
       );
     });
@@ -320,7 +314,7 @@ test("feed retrieval rejects cancellation before opening a socket", async (t) =>
   controller.abort();
 
   await assert.rejects(
-    fetchFeed({ url: "https://feeds.example.test/rss", limit: 1 }, controller.signal),
+    fetchFeed({ url: "https://feeds.example.test/rss" }, controller.signal),
     /CANCELLED|cancel/i,
   );
   assert.equal(requests.length, 0);
@@ -338,10 +332,62 @@ test("Atom text-construct titles are readable and entries inherit the feed autho
       </feed>`,
     }),
   });
-  const result = await fetchFeed(
-    { url: "https://example.org/feed", limit: 1 },
-    new AbortController().signal,
-  );
+  const result = await fetchFeed({ url: "https://example.org/feed" }, new AbortController().signal);
   assert.equal(result.items[0].title, "A readable title");
   assert.equal(result.items[0].author, "Feed Editor");
+});
+
+test("valid feed entries are not capped at the historical 10,000-position boundary", async (t) => {
+  const entries = Array.from(
+    { length: 10_001 },
+    (_, index) => `<entry><link href="https://articles.example.test/${index + 1}" /></entry>`,
+  ).join("");
+  mockPages(t, {
+    response: () => ({
+      body: `<feed xmlns="http://www.w3.org/2005/Atom">${entries}</feed>`,
+      headers: { "content-type": atomMime },
+    }),
+  });
+
+  const result = await fetchFeed(
+    { url: "https://feeds.example.test/large-current.xml" },
+    new AbortController().signal,
+  );
+
+  assert.equal(result.items.length, 10_001);
+  assert.equal(result.items[10_000].observedPosition, 10_001);
+  assert.deepEqual(result.issues, []);
+});
+
+test("a conditional 304 response returns validators without parsing an empty body", async (t) => {
+  const url = "https://feeds.example.test/conditional.xml";
+  const { requests } = mockPages(t, {
+    response: () => ({ status: 304, body: "", headers: { etag: '"v2"' } }),
+  });
+
+  const result = await fetchFeed(
+    {
+      url,
+      validators: {
+        url,
+        etag: '"v1"',
+        lastModified: "Tue, 03 Nov 2026 08:00:00 GMT",
+      },
+    },
+    new AbortController().signal,
+  );
+
+  assert.deepEqual(result, {
+    items: [],
+    issues: [],
+    notModified: true,
+    validators: {
+      url,
+      etag: '"v2"',
+      lastModified: "Tue, 03 Nov 2026 08:00:00 GMT",
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers["if-none-match"], '"v1"');
+  assert.equal(requests[0].options.headers["if-modified-since"], "Tue, 03 Nov 2026 08:00:00 GMT");
 });

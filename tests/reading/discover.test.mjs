@@ -46,9 +46,10 @@ async function setup(t) {
 
 function feedPages(t, feeds) {
   return mockPages(t, {
-    response: ({ url }) => {
+    response: ({ url, options }) => {
       const value = feeds.get(url.href);
       if (!value) return { status: 404, body: "Not found" };
+      if (typeof value === "function") return value({ url, options });
       return typeof value === "string"
         ? { body: value, headers: { "content-type": feedMime } }
         : value;
@@ -196,7 +197,7 @@ test("article URLs deduplicate without dropping queries and keep the winning fee
   assert.equal(result.items[0].item.sourceId, sourceIdFor(firstUrl));
 });
 
-test("zero title or summary matches are not saved", async (t) => {
+test("zero title or summary matches are not selected from the refreshed snapshot", async (t) => {
   const f = await setup(t);
   const url = "https://feeds.example.test/no-match.xml";
   feedPages(
@@ -210,10 +211,13 @@ test("zero title or summary matches are not saved", async (t) => {
   });
 
   assert.deepEqual(result.items, []);
-  assert.equal(await f.library.latest(sourceIdFor(url)), undefined);
+  assert.deepEqual(
+    (await f.library.prepared(sourceIdFor(url)))?.batch?.items.map(({ externalId }) => externalId),
+    ["body-only"],
+  );
 });
 
-test("only selected items are stored and normalized feed identity remains stable", async (t) => {
+test("full feed snapshots are stored and normalized identity remains stable", async (t) => {
   const f = await setup(t);
   const url = "https://feeds.example.test/selected.xml";
   const xml = rss([
@@ -221,7 +225,7 @@ test("only selected items are stored and normalized feed identity remains stable
     item({ id: "also-match", title: "Target secondary" }),
     item({ id: "not-selected", title: "Unrelated" }),
   ]);
-  feedPages(t, new Map([[url, xml]]));
+  const { requests } = feedPages(t, new Map([[url, xml]]));
 
   const first = await discoverReading(
     f.library,
@@ -240,11 +244,12 @@ test("only selected items are stored and normalized feed identity remains stable
   );
   assert.deepEqual(
     stored?.items.map(({ externalId }) => externalId),
-    ["top"],
+    ["top", "also-match", "not-selected"],
   );
   assert.equal(stored?.items[0]?.metadata?.sourceUrl, url);
   assert.equal(second.items[0]?.item.sourceId, first.items[0]?.item.sourceId);
   assert.equal(second.items[0]?.item.itemId, first.items[0]?.item.itemId);
+  assert.equal(requests.length, 2);
 });
 
 test("disabled sources are excluded from requests and enabled-source count", async (t) => {
@@ -270,11 +275,10 @@ test("disabled sources are excluded from requests and enabled-source count", asy
   assert.equal(result.items[0]?.sourceName, "Enabled");
 });
 
-test("feed and save failures are source-labeled while acknowledged saves remain useful", async (t) => {
+test("feed failures are source-labeled while successful snapshots remain useful", async (t) => {
   const f = await setup(t);
   const fetchFailureUrl = "https://feeds.example.test/fetch-failure.xml";
   const parseFailureUrl = "https://feeds.example.test/parse-failure.xml";
-  const saveFailureUrl = "https://feeds.example.test/save-failure.xml";
   const successUrl = "https://feeds.example.test/success.xml";
   const feeds = new Map([
     [
@@ -285,28 +289,18 @@ test("feed and save failures are source-labeled while acknowledged saves remain 
       parseFailureUrl,
       { body: "<html>Not a feed</html>", headers: { "content-type": "text/html; charset=utf-8" } },
     ],
-    [saveFailureUrl, rss([item({ id: "save-failed", title: "Target" })])],
     [successUrl, rss([item({ id: "saved", title: "Target" })])],
   ]);
   feedPages(t, feeds);
-  const failedSourceId = sourceIdFor(saveFailureUrl);
-  const library = {
-    save: async (request, signal) => {
-      if (signal?.aborted) throw new Error("LIBRARY_CANCELLED");
-      if (request.batch.sourceId === failedSourceId) throw new Error("synthetic save failure");
-      return f.library.save(request, signal);
-    },
-  };
 
   const result = await discoverReading(
-    library,
+    f.library,
     [
       source("Fetch failure", fetchFailureUrl),
       source("Parse failure", parseFailureUrl),
-      source("Save failure", saveFailureUrl),
       source("Success", successUrl),
     ],
-    { terms: ["target"], limit: 4 },
+    { terms: ["target"], limit: 1 },
   );
 
   assert.deepEqual(
@@ -315,7 +309,7 @@ test("feed and save failures are source-labeled while acknowledged saves remain 
   );
   assert.deepEqual(
     result.issues.map(({ source }) => source),
-    ["Fetch failure", "Parse failure", "Save failure"],
+    ["Fetch failure", "Parse failure"],
   );
   assert.equal((await f.library.latest(sourceIdFor(successUrl)))?.items[0]?.externalId, "saved");
 });
@@ -338,8 +332,8 @@ test("caller cancellation aborts an in-flight feed request without saving", asyn
     controller.signal,
   );
 
-  for (let attempt = 0; attempt < 20 && !requests[0]?.response; attempt++) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 200 && !requests[0]?.response; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.ok(requests[0]?.response, "the HTTP response should be open before cancellation");
   controller.abort();

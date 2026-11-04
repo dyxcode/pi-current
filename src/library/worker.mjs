@@ -3,7 +3,16 @@ import { closeSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { initialize } from "./schema.mjs";
-import { answer, id, readRequest, saveRequest, searchRequest } from "./validation.mjs";
+import {
+  answer,
+  feedValidators,
+  id,
+  preparationRequest,
+  readRequest,
+  saveRequest,
+  searchRequest,
+  sourceId,
+} from "./validation.mjs";
 
 /** @param {unknown} value */
 function hash(value) {
@@ -216,6 +225,84 @@ function save(db, request) {
   }
   return batch(db, b.id);
 }
+/** @param {import('node:sqlite').DatabaseSync} db @param {string} source */
+function prepared(db, source) {
+  const row = db.prepare("SELECT * FROM source_preparations WHERE source=?").get(source);
+  if (!row) return undefined;
+  let issues;
+  try {
+    issues = JSON.parse(String(row.issues));
+  } catch {
+    throw new Error("LIBRARY_SCHEMA");
+  }
+  if (!Array.isArray(issues) || issues.some((issue) => typeof issue !== "string"))
+    throw new Error("LIBRARY_SCHEMA");
+  const result = /** @type {import('./types.ts').PreparedSource} */ ({
+    sourceId: String(row.source),
+    attemptedAt: String(row.attempted_at),
+    issues,
+  });
+  if (row.validators !== null) {
+    try {
+      result.validators = JSON.parse(String(row.validators));
+      feedValidators(result.validators);
+    } catch {
+      throw new Error("LIBRARY_SCHEMA");
+    }
+  }
+  if (row.run_id !== null) {
+    const snapshot = batch(db, String(row.run_id));
+    if (!snapshot) throw new Error("LIBRARY_SCHEMA");
+    result.batch = snapshot;
+  }
+  return result;
+}
+/** @param {import('node:sqlite').DatabaseSync} db @param {import('./types.ts').PreparationRequest} request */
+function prepare(db, request) {
+  const previous = db
+    .prepare("SELECT attempted_at,run_id,validators FROM source_preparations WHERE source=?")
+    .get(request.sourceId);
+  if (request.notModified !== undefined) {
+    if (!previous || previous.run_id === null || !batch(db, String(previous.run_id)))
+      throw new Error("LIBRARY_INVALID");
+    if (previous.run_id !== request.notModified) {
+      const current = prepared(db, request.sourceId);
+      if (!current) throw new Error("LIBRARY_SCHEMA");
+      return current;
+    }
+  }
+  if (previous) {
+    const previousTime = Date.parse(String(previous.attempted_at));
+    if (!Number.isFinite(previousTime)) throw new Error("LIBRARY_SCHEMA");
+    if (Date.parse(request.attemptedAt) < previousTime) {
+      const current = prepared(db, request.sourceId);
+      if (!current) throw new Error("LIBRARY_SCHEMA");
+      return current;
+    }
+  }
+  let runId = previous?.run_id ?? null;
+  let validatorsJson = previous?.validators ?? null;
+  if (request.save) {
+    const snapshot = save(db, request.save);
+    if (!snapshot) throw new Error("LIBRARY_SCHEMA");
+    runId = snapshot.id;
+    validatorsJson = request.validators ? JSON.stringify(request.validators) : null;
+  } else if (request.notModified !== undefined && request.validators) {
+    validatorsJson = JSON.stringify(request.validators);
+  }
+  db.prepare(`INSERT INTO source_preparations (source,attempted_at,issues,validators,run_id) VALUES (?,?,?,?,?)
+    ON CONFLICT(source) DO UPDATE SET attempted_at=excluded.attempted_at, issues=excluded.issues,
+    validators=excluded.validators, run_id=excluded.run_id`).run(
+    request.sourceId,
+    request.attemptedAt,
+    JSON.stringify(request.issues),
+    validatorsJson,
+    runId,
+  );
+  const result = prepared(db, request.sourceId);
+  if (!result) throw new Error("LIBRARY_SCHEMA");
+  return result;
+}
 /** @param {import('node:sqlite').DatabaseSync} db @param {import('./types.ts').SearchRequest} request */
 function search(db, request) {
   const query = request.query.trim().toLowerCase();
@@ -284,6 +371,8 @@ function execute(workerData) {
   try {
     const { root, operation, request } = workerData;
     if (operation === "save") saveRequest(request);
+    else if (operation === "prepare") preparationRequest(request);
+    else if (operation === "prepared") sourceId(request);
     else if (operation === "search") searchRequest(request);
     else if (operation === "read") readRequest(request);
     else if (operation === "remove") id(request);
@@ -295,9 +384,13 @@ function execute(workerData) {
         throw new Error("LIBRARY_INVALID");
     } else throw new Error("LIBRARY_INVALID");
     const path = safePath(root);
-    const writing = operation === "save" || operation === "remove";
+    const preparation = /** @type {import('./types.ts').PreparationRequest | undefined} */ (
+      operation === "prepare" ? request : undefined
+    );
+    if (preparation?.notModified !== undefined && !exists(path)) throw new Error("LIBRARY_INVALID");
+    const writing = operation === "save" || operation === "prepare" || operation === "remove";
     let result;
-    if (!exists(path) && operation !== "save")
+    if (!exists(path) && operation !== "save" && operation !== "prepare")
       result = operation === "search" ? [] : operation === "remove" ? false : undefined;
     else {
       if (!exists(path)) {
@@ -321,7 +414,8 @@ function execute(workerData) {
         enableForeignKeyConstraints: true,
         allowExtension: false,
       });
-      const migrating = db.prepare("PRAGMA user_version").get()?.user_version === 1;
+      const version = db.prepare("PRAGMA user_version").get()?.user_version;
+      const migrating = version === 1 || version === 2;
       if (migrating) process.send?.({ phase: "migration" });
       if (migrating && !writing) {
         db.close();
@@ -333,12 +427,18 @@ function execute(workerData) {
       }
       if (writing || migrating) db.exec("PRAGMA synchronous=FULL");
       db.exec(writing || migrating ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
-      const ready = initialize(db, operation === "save");
+      const ready = initialize(db, operation === "save" || operation === "prepare");
       if (migrating) process.send?.({ phase: "operation" });
       if (!ready) result = operation === "search" ? [] : operation === "remove" ? false : undefined;
       else if (operation === "save") {
         saveRequest(request);
         result = save(db, request);
+      } else if (operation === "prepare") {
+        preparationRequest(request);
+        result = prepare(db, request);
+      } else if (operation === "prepared") {
+        sourceId(request);
+        result = prepared(db, request);
       } else if (operation === "search") {
         searchRequest(request);
         result = search(db, request);

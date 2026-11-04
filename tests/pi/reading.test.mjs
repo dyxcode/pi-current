@@ -48,7 +48,7 @@ async function fixture(t, list = sources) {
   const tools = wrapRegisteredTools([...extension.tools.values()], harness.runner);
   const find = tools.find((tool) => tool.name === "current_reading_find");
   assert.ok(find, "Pi exposes reading discovery");
-  return { entries, extension, library, runtime, find, tools };
+  return { entries, extension, library, runtime, find, tools, data };
 }
 
 test("Pi reading discovery saves ordered results and displays source/date/matches locally", async (t) => {
@@ -64,6 +64,9 @@ test("Pi reading discovery saves ordered results and displays source/date/matche
   assert.equal(result.structuredContent.status, "saved");
   assert.equal(result.structuredContent.count, 2);
   assert.equal(requests.length, 2);
+  const repeated = await f.find.execute("again", { terms: ["urban life"], limit: 2 });
+  assert.equal(requests.length, 4, "another recommendation checks sources again");
+  assert.deepEqual(repeated.structuredContent.references, result.structuredContent.references);
   assert.doesNotMatch(
     JSON.stringify(result),
     /LOCAL_READING_BODY|PUBLIC_FEED_SUMMARY|science urban life/,
@@ -117,9 +120,39 @@ test("reading receipt retains acknowledged saves when local presentation fails",
   const result = await f.find.execute("reading", {});
   assert.equal(result.structuredContent.count, 1);
   assert.equal(result.structuredContent.status, "saved");
-  assert.match(result.structuredContent.message, /saved|Saved/);
+  assert.match(result.structuredContent.message, /prepared.*local library/i);
   assert.match(result.structuredContent.message, /local card/i);
   assert.ok(await f.library.read(result.structuredContent.references[0]));
+});
+
+test("real Pi session hooks prepare in the background and recommendation shares that work", async (t) => {
+  const { requests } = mockPages(t, {
+    response: ({ url }) => ({
+      body: feed(url.pathname.slice(1)),
+      headers: { "content-type": "application/rss+xml" },
+    }),
+  });
+  const f = await fixture(t);
+  const statuses = [];
+  const context = { hasUI: true, ui: { setStatus: (...args) => statuses.push(args) } };
+  const shutdown = async () => {
+    for (const handler of f.extension.handlers.get("session_shutdown") ?? [])
+      await handler({ type: "session_shutdown", reason: "reload" }, context);
+  };
+  t.after(shutdown);
+  for (const handler of f.extension.handlers.get("session_start") ?? [])
+    await handler({ type: "session_start", reason: "startup" }, context);
+  const result = await f.find.execute("recommend", {});
+  assert.equal(result.structuredContent.count, 2);
+  assert.equal(requests.length, 2);
+  assert.ok(
+    statuses.some(([, value]) => /Checked 2 source.*processed 2 article/.test(value ?? "")),
+  );
+  await shutdown();
+  for (const handler of f.extension.handlers.get("session_start") ?? [])
+    await handler({ type: "session_start", reason: "reload" }, context);
+  await f.find.execute("recommend-again", {});
+  assert.equal(requests.length, 4, "reload checks the configured sources again");
 });
 
 test("a /source change controls the next reading request through the registered Pi boundary", async (t) => {
