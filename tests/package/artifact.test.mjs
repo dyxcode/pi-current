@@ -94,13 +94,14 @@ export default async function(){
     (e) => e.resolvedPath === join(installed, "src/index.ts"),
   );
   assert.ok(extension);
-  assert.deepEqual([...extension.commands.keys()], []);
+  assert.deepEqual([...extension.commands.keys()], ["source"]);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url.href, feedUrl);
   assert.deepEqual(
     [...extension.tools.keys()].sort(),
     [
       "current_source_import",
+      "current_reading_find",
       "current_library_search",
       "current_library_read",
       "current_library_remove",

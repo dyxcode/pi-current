@@ -63,11 +63,12 @@ test("Pi discovers the package from another directory and reloads it without dup
         "current_library_read",
         "current_library_remove",
         "current_library_search",
+        "current_reading_find",
         "current_source_import",
         "current_web_read",
         "current_web_search",
       ],
-      `${phase}: Pi exposes six direct import, library and public web tools`,
+      `${phase}: Pi exposes seven reading, direct import, library and public web tools`,
     );
     const read = tools.get("current_web_read").definition;
     assert.deepEqual(
@@ -86,6 +87,9 @@ test("Pi discovers the package from another directory and reloads it without dup
       /Do not use it for recommendations/i,
     );
     assert.equal(tools.has("current_sources"), false);
+    assert.deepEqual([...extensions[0].commands.keys()], ["source"]);
+    const reading = tools.get("current_reading_find").definition;
+    assert.deepEqual(Object.keys(reading.parameters.properties).sort(), ["limit", "terms"]);
     assert.equal(
       extensions[0].commands.has("sources"),
       false,

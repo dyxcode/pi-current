@@ -1,3 +1,5 @@
+import { discoverReading } from "__PACKAGE_ROOT__/src/reading/discover.ts";
+import { readSources, writeSources } from "__PACKAGE_ROOT__/src/reading/sources.ts";
 import { importFeed } from "__PACKAGE_ROOT__/src/sources/import.ts";
 import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 import assert from "node:assert/strict";
@@ -29,6 +31,21 @@ export default async function () {
     assert.equal(outcome.batch.items[1]?.text, undefined);
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url.href, feedUrl);
+    await writeSources(dataRoot, [
+      { name: "Fixture reading", url: feedUrl, enabled: true },
+      { name: "Disabled", url: "https://example.com/disabled", enabled: false },
+    ]);
+    const selected = await discoverReading(library, await readSources(dataRoot), {
+      terms: ["article"],
+      limit: 1,
+    });
+    assert.equal(selected.items.length, 1);
+    assert.equal(selected.items[0].item.itemId, outcome.batch.items[0].itemId);
+    assert.equal(selected.items[0].sourceName, "Fixture reading");
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(({ url }) => url.href === feedUrl));
+    await writeSources(dataRoot, []);
+    assert.deepEqual(await readSources(dataRoot), []);
     const first = outcome.batch.items[0];
     assert.ok(first);
     const sourceItem = { ...first };

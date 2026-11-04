@@ -35,6 +35,15 @@ export const localResultSchema = Type.Object(
         { maxItems: 20 },
       ),
     ),
+    sourceIssues: Type.Optional(
+      Type.Array(
+        Type.Object(
+          { source: Type.String({ maxLength: 200 }), message: Type.String({ maxLength: 200 }) },
+          { additionalProperties: false },
+        ),
+        { maxItems: 20 },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -66,10 +75,15 @@ export function receipt(
     status?: string;
     references?: { itemId: string; versionId: string }[];
     issues?: { index: number; message: string }[];
+    sourceIssues?: { source: string; message: string }[];
   } = {},
 ) {
   const issues = extra.issues?.slice(0, 20).map(({ index, message }) => ({
     index,
+    message: Array.from(cleanDisplayText(message)).slice(0, 200).join(""),
+  }));
+  const sourceIssues = extra.sourceIssues?.slice(0, 20).map(({ source, message }) => ({
+    source: Array.from(cleanDisplayText(source)).slice(0, 200).join(""),
     message: Array.from(cleanDisplayText(message)).slice(0, 200).join(""),
   }));
   const result = {
@@ -80,6 +94,7 @@ export function receipt(
     message,
     ...(extra.references === undefined ? {} : { references: extra.references }),
     ...(issues === undefined ? {} : { issues }),
+    ...(sourceIssues === undefined ? {} : { sourceIssues }),
   };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -95,14 +110,21 @@ export function registerLocalCards(pi: ExtensionAPI) {
       body: cleanDisplayText(body),
     });
 
-  const itemCard = (item: LibraryItem) => {
+  const itemCard = (
+    item: LibraryItem,
+    reading?: { position: number; sourceName: string; matchedTerms: string[] },
+  ) => {
     const hasBody = typeof item.text === "string";
     const summary = shortExcerpt(item.summary ?? "");
     const preview = hasBody ? shortExcerpt(item.text) : "";
     const body = [
       `Saved item: ${item.itemId}`,
-      `Source: ${item.sourceId}`,
+      `Source: ${reading?.sourceName ?? item.sourceId}`,
       item.url,
+      ...(typeof item.metadata?.publishedAt === "string"
+        ? [`Published: ${item.metadata.publishedAt}`]
+        : []),
+      ...(reading?.matchedTerms.length ? [`Matched: ${reading.matchedTerms.join(", ")}`] : []),
       ...(hasBody
         ? [`Retrieved: ${item.retrievedAt}`]
         : [
@@ -113,7 +135,7 @@ export function registerLocalCards(pi: ExtensionAPI) {
       "",
       ...(summary ? [`Source summary: ${summary}`] : preview ? [`Body preview: ${preview}`] : []),
     ].join("\n");
-    card(item.title || "Saved content", body);
+    card(`${reading ? `${reading.position}. ` : ""}${item.title || "Saved content"}`, body);
   };
 
   pi.registerEntryRenderer<Card>(CARD, (entry, options, theme) => {

@@ -8,6 +8,9 @@ import { dataRoot } from "../sources/paths.ts";
 import type { SourceIssue } from "../sources/types.ts";
 import { localResultSchema, receipt, registerLocalCards, cleanDisplayText } from "./cards.ts";
 import { openLocalReader } from "./reader.ts";
+import { discoverReading } from "../reading/discover.ts";
+import { readSources } from "../reading/sources.ts";
+import { registerSourceMenu } from "./source-menu.ts";
 
 const itemIdSchema = Type.String({
   pattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
@@ -55,6 +58,86 @@ export function registerSources(
     sessionController = new AbortController();
   });
   pi.on("session_shutdown", () => sessionController.abort());
+  registerSourceMenu(pi, root);
+
+  pi.registerTool({
+    name: "current_reading_find",
+    label: "Find articles to read",
+    description:
+      "Find and save articles from the enabled RSS/Atom sources managed with /source. Searches current feed titles and summaries, then shows selected articles locally.",
+    promptSnippet:
+      "Find articles for the current reading request from enabled feeds and save the selection.",
+    promptGuidelines: [
+      "For a topic request, derive concise words or phrases from the current user intent, including terms in the sources' language when useful. Matching is literal against titles and summaries.",
+      "For mixed reading without a specific topic, omit terms to select across sources. The default result count is five.",
+      "Keep library-only requests offline by using current_library_search. Discovery fetches current feeds and does not search their full historical archives.",
+      "Results are displayed in ranked local cards. References have the same order, so use the corresponding reference when the user asks to open a result. Article text stays local; do not infer an article's argument from a reference.",
+    ],
+    parameters: Type.Object(
+      {
+        terms: Type.Optional(
+          Type.Array(Type.String(), {
+            description: "Topic words or phrases. Omit for mixed reading.",
+          }),
+        ),
+        limit: Type.Optional(
+          Type.Integer({ description: "Articles to select, from 1 to 10. Defaults to 5." }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    outputSchema: localResultSchema,
+    async execute(_toolCallId, params, signal) {
+      const run = operation(signal);
+      let result: Awaited<ReturnType<typeof discoverReading>>;
+      try {
+        const sources = await readSources(root);
+        current(run);
+        result = await discoverReading(library, sources, params, run.signal);
+        current(run);
+      } catch (error) {
+        current(run);
+        return receipt("reading", 0, `Reading discovery failed: ${safeError(error)}`, {
+          status: "failed",
+        });
+      }
+      if (result.enabledSources === 0)
+        return receipt(
+          "reading",
+          0,
+          "No sources are enabled. Open /source to enable or add a feed.",
+          { status: "empty" },
+        );
+      const count = result.items.length;
+      let message = count
+        ? `Saved ${count} selected article(s) to the local library. References follow the displayed reading order.`
+        : "No matching articles were saved from the enabled feeds.";
+      try {
+        for (const [index, selected] of result.items.entries()) {
+          itemCard(selected.item, {
+            position: index + 1,
+            sourceName: selected.sourceName,
+            matchedTerms: selected.matchedTerms,
+          });
+        }
+        if (result.issues.length)
+          card(
+            "Reading source issues",
+            result.issues
+              .slice(0, 20)
+              .map(({ source, message }) => `${source}: ${message}`)
+              .join("\n"),
+          );
+      } catch (error) {
+        message += ` A local card could not be shown: ${safeError(error)}`;
+      }
+      return receipt("reading", count, message, {
+        status: result.issues.length ? (count ? "partial" : "failed") : count ? "saved" : "empty",
+        references: savedReferences(result.items.map(({ item }) => item)),
+        ...(result.issues.length ? { sourceIssues: result.issues } : {}),
+      });
+    },
+  });
 
   pi.registerTool({
     name: "current_source_import",
