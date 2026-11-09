@@ -158,7 +158,8 @@ const extension = loaded.extensions.find(
   (value) => value.resolvedPath === join(installed, "src/index.ts"),
 );
 assert.ok(extension);
-assert.equal(extension.tools.size, 6);
+assert.equal(extension.tools.size, 7);
+assert.ok(extension.tools.has("current_source_add"));
 assert.deepEqual([...extension.commands.keys()], ["source"]);
 console.log(
   "PASS: isolated Pi loading, source menu, reading discovery, RSS parsing, HTML worker and SQLite workflow.",

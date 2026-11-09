@@ -29,9 +29,11 @@ Pi 先将启用来源的当前 feed 条目准备到本地文章库，再默认�
 
 ## 选择来源
 
-在 Pi 中输入 `/source`，可以添加 feed、启用或禁用来源，以及从列表中移除来源。修改会自动保存。添加时输入 RSS/Atom URL 和显示名称。Pi 运行期间会自动准备已启用来源；禁用或移除后，后续准备和推荐会排除该来源。
+通过对话让 Pi 查找并添加来源，例如：“帮我添加几个科技和人文阅读源。”Pi 可以搜索合适的 feeds，验证其 RSS/Atom URL，再保存为启用来源。推荐请求使用已经启用的来源。重复添加已有来源会保留其名称和启用状态。
 
-默认来源是 [MIT Research](https://news.mit.edu/rss)、[JSTOR Daily](https://daily.jstor.org/) 和 [Psyche](https://psyche.co/)，分别覆盖研究与科技、人文和日常心理阅读。移除来源会保留 library 中已保存的文章。
+输入 `/source` 查看来源名称、网址和启用状态，并启用或禁用来源。修改会自动保存，并更新后台准备。禁用后，后续准备和推荐会排除该来源，已保存的文章仍保留。重新启用即可继续关注。
+
+默认来源是 [MIT Research](https://news.mit.edu/rss)、[JSTOR Daily](https://daily.jstor.org/) 和 [Psyche](https://psyche.co/)，分别覆盖研究与科技、人文和日常心理阅读。
 
 ## 提前准备文章
 

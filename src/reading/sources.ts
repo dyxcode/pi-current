@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { normalizeFeedUrl } from "../sources/import.ts";
+import { fetchFeedWithDeadline, normalizeFeedUrl } from "../sources/import.ts";
 import { safeRoot } from "../sources/paths.ts";
 
 export type ReadingSource = { name: string; url: string; enabled: boolean };
 
 const sourceFileName = "sources.json";
+const sourceUpdates = new Map<string, Promise<void>>();
 const defaultSources: ReadingSource[] = [
   { name: "MIT Research", url: "https://news.mit.edu/rss/research", enabled: true },
   { name: "JSTOR Daily", url: "https://daily.jstor.org/feed", enabled: true },
@@ -84,7 +85,12 @@ export async function readSources(root: string): Promise<ReadingSource[]> {
 }
 
 /** Persist a validated, normalized local source list without acquiring any feed content. */
-export async function writeSources(root: string, sources: ReadingSource[]): Promise<void> {
+export async function writeSources(
+  root: string,
+  sources: ReadingSource[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new Error("CANCELLED");
   const checked = sourceList(sources);
   const safeDirectory = safeRoot(root);
   await mkdir(safeDirectory, { recursive: true });
@@ -96,8 +102,73 @@ export async function writeSources(root: string, sources: ReadingSource[]): Prom
       encoding: "utf8",
       flag: "wx",
     });
+    if (signal?.aborted) throw new Error("CANCELLED");
     await rename(temporaryPath, sourcePath);
   } finally {
     await rm(temporaryPath, { force: true });
   }
+}
+
+/** Serialize local read-modify-write updates for one runtime data directory. */
+export async function updateSources(
+  root: string,
+  update: (sources: ReadingSource[]) => ReadingSource[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const safeDirectory = safeRoot(root);
+  const previous = sourceUpdates.get(safeDirectory) ?? Promise.resolve();
+  const pending = previous
+    .catch(() => {})
+    .then(async () => {
+      if (signal?.aborted) throw new Error("CANCELLED");
+      const current = await readSources(safeDirectory);
+      if (signal?.aborted) throw new Error("CANCELLED");
+      const updated = update(current);
+      if (signal?.aborted) throw new Error("CANCELLED");
+      if (updated !== current) await writeSources(safeDirectory, updated, signal);
+    });
+  sourceUpdates.set(safeDirectory, pending);
+
+  try {
+    await pending;
+  } finally {
+    if (sourceUpdates.get(safeDirectory) === pending) sourceUpdates.delete(safeDirectory);
+  }
+}
+
+/** Validate, retrieve and parse one feed before adding it to the local source list. */
+export async function addSource(
+  root: string,
+  input: { name: string; url: string },
+  signal?: AbortSignal,
+): Promise<{ source: ReadingSource; added: boolean; issues: string[] }> {
+  if (signal?.aborted) throw new Error("CANCELLED");
+  const candidate = sourceList([{ name: input.name, url: input.url, enabled: true }])[0];
+  if (!candidate) throw new Error("Invalid source list: expected a source.");
+
+  const existing = await readSources(root);
+  if (signal?.aborted) throw new Error("CANCELLED");
+  const duplicate = existing.find((source) => source.url === candidate.url);
+  if (duplicate) return { source: duplicate, added: false, issues: [] };
+
+  const fetched = await fetchFeedWithDeadline({ url: candidate.url }, signal);
+  if (signal?.aborted) throw new Error("CANCELLED");
+  const issues = [...new Set(fetched.issues.map(({ message }) => message))];
+  let result = { source: candidate, added: true, issues };
+
+  await updateSources(
+    root,
+    (sources) => {
+      const concurrent = sources.find((source) => source.url === candidate.url);
+      if (concurrent) {
+        result = { source: concurrent, added: false, issues };
+        return sources;
+      }
+      result = { source: candidate, added: true, issues };
+      return [...sources, candidate];
+    },
+    signal,
+  );
+
+  return result;
 }

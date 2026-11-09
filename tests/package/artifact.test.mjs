@@ -137,6 +137,7 @@ export default async function(){
       "current_library_read",
       "current_library_remove",
       "current_reading_find",
+      "current_source_add",
       "current_web_search",
       "current_web_read",
     ].sort(),

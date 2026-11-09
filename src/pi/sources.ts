@@ -12,6 +12,7 @@ import { localResultSchema, receipt, registerLocalCards, cleanDisplayText } from
 import { openLocalReader } from "./reader.ts";
 import { selectPreparedReading } from "../reading/discover.ts";
 import { PreparationRuntime } from "../reading/runtime.ts";
+import { addSource } from "../reading/sources.ts";
 import { registerSourceMenu } from "./source-menu.ts";
 
 const itemIdSchema = Type.String({
@@ -70,6 +71,59 @@ export function registerSources(
   registerSourceMenu(pi, root, () => preparation.sourcesChanged());
 
   pi.registerTool({
+    name: "current_source_add",
+    label: "Add reading source",
+    description:
+      "Validate a public RSS/Atom feed and add it as an enabled reading source. Existing subscriptions retain their name and enabled state. Returns source metadata, not article text.",
+    promptSnippet: "Find and add reading sources when the user asks to subscribe or add sources.",
+    promptGuidelines: [
+      "Use current_web_search to find suitable sources and their RSS/Atom feed URLs when needed. Supply the feed URL and a descriptive source name; this tool validates the feed before saving it.",
+      "Add sources only when the user asks to add or subscribe. A recommendation request uses existing enabled sources and does not authorize new subscriptions.",
+      "Explain which sources were added and why they fit the request. Report validation failures honestly; a feed may contain bodies, summaries, or links only.",
+      "Users view and enable or disable sources through /source. Adding an existing disabled source does not enable it.",
+    ],
+    parameters: Type.Object(
+      {
+        name: Type.String({
+          minLength: 1,
+          maxLength: 100,
+          description: "Display name of the source.",
+        }),
+        url: Type.String({
+          minLength: 1,
+          maxLength: 8192,
+          description: "Public RSS/Atom feed URL.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    outputSchema: Type.Object({
+      source: Type.Object({ name: Type.String(), url: Type.String(), enabled: Type.Boolean() }),
+      added: Type.Boolean(),
+      issues: Type.Array(Type.String()),
+      message: Type.String(),
+    }),
+    async execute(_toolCallId, params, signal) {
+      const run = operation(signal);
+      const result = await addSource(root, params, run.signal);
+      current(run);
+      if (result.added) await preparation.sourcesChanged();
+      current(run);
+      const message = result.added
+        ? "Added the verified feed as an enabled reading source."
+        : result.source.enabled
+          ? "This source is already enabled."
+          : "This source is already present and disabled. Open /source to enable it.";
+      const output = { ...result, message };
+      return {
+        content: [{ type: "text", text: JSON.stringify(output) }],
+        structuredContent: output,
+        details: output,
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "current_reading_find",
     label: "Find articles to read",
     description:
@@ -80,6 +134,7 @@ export function registerSources(
       "For a topic request, derive concise words or phrases from the current user intent, including terms in the sources' language when useful. Matching is literal against titles and summaries.",
       "For mixed reading or today's recommendations without a specific topic, omit terms. Today describes the recommendation request, not a topic keyword or a publication-date filter. The default result count is five.",
       "Publication-date filtering is not supported. Do not describe this selection as articles published today.",
+      "Use existing enabled sources for recommendations. Add subscriptions only when the user asks to add sources.",
       "Keep library-only requests offline by using current_library_search. Recommendations revalidate prepared current feed entries and do not search publishers' full archives.",
       "Results are displayed in ranked local cards. References have the same order, so use the corresponding reference when the user asks to open a result. Article text stays local; do not infer an article's argument from a reference.",
     ],
@@ -115,7 +170,7 @@ export function registerSources(
         return receipt(
           "reading",
           0,
-          "No sources are enabled. Open /source to enable or add a feed.",
+          "No sources are enabled. Open /source to enable an existing source, or ask to add reading sources.",
           { status: "empty" },
         );
       const count = result.items.length;

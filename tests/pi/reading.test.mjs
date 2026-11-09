@@ -7,6 +7,7 @@ import { createEventBus, wrapRegisteredTools } from "@earendil-works/pi-coding-a
 import { loadExtensionFromFactory } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import { SQLiteContentLibrary } from "../../src/library/store.ts";
 import { registerSources } from "../../src/pi/sources.ts";
+import { readSources } from "../../src/reading/sources.ts";
 import { mockPages } from "../helpers/page-harness.mjs";
 import { createSearchHarness } from "../helpers/search-harness.mjs";
 
@@ -50,6 +51,81 @@ async function fixture(t, list = sources) {
   assert.ok(find, "Pi exposes reading discovery");
   return { entries, extension, library, runtime, find, tools, data };
 }
+
+test("Pi adds a verified source through conversation and prepares it for reading", async (t) => {
+  mockPages(t, {
+    response: () => ({ body: feed("new"), headers: { "content-type": "application/rss+xml" } }),
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add, "Pi exposes conversational source addition");
+  let prepared;
+  const background = new Promise((resolve) => {
+    prepared = resolve;
+  });
+  const context = {
+    hasUI: true,
+    ui: {
+      setStatus: (_key, value) => {
+        if (/processed 1 article/.test(value ?? "")) prepared();
+      },
+    },
+  };
+  t.after(async () => {
+    for (const handler of f.extension.handlers.get("session_shutdown") ?? [])
+      await handler({ type: "session_shutdown", reason: "reload" }, context);
+  });
+  for (const handler of f.extension.handlers.get("session_start") ?? [])
+    await handler({ type: "session_start", reason: "startup" }, context);
+  const result = await add.execute("add", { name: "New source", url: "https://example.com/feed" });
+  assert.equal(result.structuredContent.added, true);
+  assert.deepEqual(await readSources(f.data), [
+    { name: "New source", url: "https://example.com/feed", enabled: true },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /LOCAL_READING_BODY|PUBLIC_FEED_SUMMARY/);
+  await background;
+  assert.equal((await f.library.search({ query: "urban life" })).length, 1);
+  const reading = await f.find.execute("recommend", {});
+  assert.equal(reading.structuredContent.count, 1);
+  const saved = await f.library.read(reading.structuredContent.references[0]);
+  assert.equal(saved.title, "new urban life");
+});
+
+test("Pi source addition preserves a disabled subscription without fetching", async (t) => {
+  const { requests } = mockPages(t);
+  const f = await fixture(t, [{ ...sources[0], enabled: false }]);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+  const result = await add.execute("add", { name: "Renamed", url: sources[0].url });
+  assert.equal(result.structuredContent.added, false);
+  assert.equal(result.structuredContent.source.enabled, false);
+  assert.match(result.structuredContent.message, /\/source/);
+  assert.deepEqual(await readSources(f.data), [{ ...sources[0], enabled: false }]);
+  assert.equal(requests.length, 0);
+});
+
+test("Pi session shutdown cancels source validation without adding a subscription", async (t) => {
+  let requested;
+  const waiting = new Promise((resolve) => {
+    requested = resolve;
+  });
+  mockPages(t, {
+    response: () => {
+      requested();
+      return undefined;
+    },
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+  const pending = add.execute("add", { name: "New", url: "https://example.com/feed" });
+  const cancelled = assert.rejects(pending, /CANCELLED/);
+  await waiting;
+  for (const handler of f.extension.handlers.get("session_shutdown") ?? [])
+    await handler({ type: "session_shutdown", reason: "reload" }, { hasUI: false });
+  await cancelled;
+  assert.deepEqual(await readSources(f.data), []);
+});
 
 test("Pi reading discovery saves ordered results and displays source/date/matches locally", async (t) => {
   const { requests } = mockPages(t, {

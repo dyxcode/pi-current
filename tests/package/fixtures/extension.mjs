@@ -1,5 +1,5 @@
 import { discoverReading } from "__PACKAGE_ROOT__/src/reading/discover.ts";
-import { readSources, writeSources } from "__PACKAGE_ROOT__/src/reading/sources.ts";
+import { addSource, readSources, writeSources } from "__PACKAGE_ROOT__/src/reading/sources.ts";
 import { sourceIdFor } from "__PACKAGE_ROOT__/src/sources/import.ts";
 import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 import assert from "node:assert/strict";
@@ -128,6 +128,15 @@ export default async function () {
     library = openContentLibrary({ root: dataRoot });
     assert.equal(await library.remove(prepared.batch.items[0].itemId), true);
     assert.equal((await library.search({ query: "Synthetic" })).length, 1);
+    const addition = await addSource(dataRoot, {
+      name: "Another source",
+      url: "https://example.com/another-feed.xml",
+    });
+    assert.equal(addition.added, true);
+    assert.equal((await readSources(dataRoot)).length, 3);
+    const duplicate = await addSource(dataRoot, sources[1]);
+    assert.equal(duplicate.added, false);
+    assert.equal(duplicate.source.enabled, false);
   } finally {
     mock.restoreAll();
     await library.close();

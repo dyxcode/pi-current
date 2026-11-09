@@ -29,9 +29,11 @@ The local reading cards show results in order, with the source, publication date
 
 ## Choose your sources
 
-Open `/source` in Pi to add a feed, enable or disable a source, or remove it from the list. Changes are saved automatically. Adding a source asks for its RSS/Atom URL and display name. Enabled sources are prepared automatically while Pi is running; disabling or removing one excludes it from subsequent preparation and recommendations.
+Ask Pi to find and add sources, for example: “Add a few sources about technology and humanities.” Pi can search for suitable feeds, validate their RSS/Atom URLs, and save them as enabled sources. A recommendation request uses your existing enabled sources. Adding an existing source keeps its name and enabled state.
 
-The default sources are [MIT Research](https://news.mit.edu/rss), [JSTOR Daily](https://daily.jstor.org/), and [Psyche](https://psyche.co/). They cover research and technology, humanities, and everyday psychology. Removing a source keeps its saved articles in your library.
+Open `/source` to view source names, URLs, and enabled states, then enable or disable a source. Changes are saved automatically and update background preparation. Disabling a source excludes it from subsequent preparation and recommendations while keeping its saved articles. Enable it again to resume following it.
+
+The default sources are [MIT Research](https://news.mit.edu/rss), [JSTOR Daily](https://daily.jstor.org/), and [Psyche](https://psyche.co/). They cover research and technology, humanities, and everyday psychology.
 
 ## Articles ready to read
 

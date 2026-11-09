@@ -126,3 +126,24 @@ test("an idle runtime does not poll sources; a later recommendation revalidates"
   assert.equal(requests.length, 2);
   assert.equal(prepared.processed, 0, "304 reuses content without saving a new batch");
 });
+
+test("a source change cannot restart preparation after concurrent shutdown", async (t) => {
+  let started;
+  const begun = new Promise((resolve) => {
+    started = resolve;
+  });
+  const { requests } = mockPages(t, {
+    response: () => {
+      started();
+      return undefined;
+    },
+  });
+  const f = await fixture(t);
+  f.runtime.start();
+  await begun;
+  await Promise.all([f.runtime.sourcesChanged(), f.runtime.stop()]);
+  // Allow any incorrectly restarted file read and synthetic request to reach the socket seam.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requests.length, 1, "shutdown must prevent a new background request");
+  assert.equal(f.notices.length, 0);
+});

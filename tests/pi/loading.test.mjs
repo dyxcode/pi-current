@@ -64,10 +64,11 @@ test("Pi discovers the package from another directory and reloads it without dup
         "current_library_remove",
         "current_library_search",
         "current_reading_find",
+        "current_source_add",
         "current_web_read",
         "current_web_search",
       ],
-      `${phase}: Pi exposes six prepared reading, library and public web tools`,
+      `${phase}: Pi exposes seven source, reading, library and public web tools`,
     );
     const read = tools.get("current_web_read").definition;
     assert.deepEqual(

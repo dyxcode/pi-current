@@ -36,9 +36,10 @@ export class PreparationRuntime {
   }
 
   async sourcesChanged(): Promise<void> {
-    const restart = this.active;
-    await this.stop();
-    if (restart) this.start();
+    const controller = this.controller;
+    controller.abort();
+    await this.pending?.catch(() => {});
+    if (this.active && this.controller === controller) this.background();
   }
 
   async ensure(signal?: AbortSignal): Promise<PreparationResult> {

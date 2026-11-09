@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,7 +12,15 @@ async function temporaryRoot(t) {
   return root;
 }
 
-function commandHarness(root, { selections = [], inputs = [], hasUI = true } = {}) {
+function sourceLabel(source, index) {
+  const state = source.enabled ? "Enabled" : "Disabled";
+  return `${index + 1}. ${source.name} — ${state} — ${source.url}`;
+}
+
+function commandHarness(
+  root,
+  { selections = [], inputs = [], hasUI = true, onChanged = async () => {} } = {},
+) {
   const commands = new Map();
   const calls = { selections: [], inputs: [], notifications: [] };
   const pi = {
@@ -25,7 +33,7 @@ function commandHarness(root, { selections = [], inputs = [], hasUI = true } = {
     async select(title, options) {
       calls.selections.push({ title, options });
       const next = selections.shift();
-      const choice = typeof next === "function" ? next(title, options) : next;
+      const choice = typeof next === "function" ? await next(title, options) : next;
       if (choice !== undefined) assert.ok(options.includes(choice), `unexpected choice: ${choice}`);
       return choice;
     },
@@ -37,7 +45,7 @@ function commandHarness(root, { selections = [], inputs = [], hasUI = true } = {
       calls.notifications.push({ message, type });
     },
   };
-  registerSourceMenu(pi, root);
+  registerSourceMenu(pi, root, onChanged);
 
   return {
     calls,
@@ -47,79 +55,103 @@ function commandHarness(root, { selections = [], inputs = [], hasUI = true } = {
   };
 }
 
-test("/source adds a name and feed URL without making a network request", async (t) => {
+test("/source lists existing sources and only offers toggle and back actions", async (t) => {
   const root = await temporaryRoot(t);
-  const originalFetch = globalThis.fetch;
-  const requests = [];
-  globalThis.fetch = async (...args) => {
-    requests.push(args);
-    throw new Error("The source menu must not fetch feeds");
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
+  const sources = await readSources(root);
+  const labels = sources.map(sourceLabel);
   const menu = commandHarness(root, {
     selections: [
       (title, options) => {
         assert.equal(title, "Reading sources");
-        assert.ok(options.includes("Add source"));
-        return "Add source";
+        assert.deepEqual(options, labels);
+        assert.ok(options.every((row) => / — (Enabled|Disabled) — https:\/\//u.test(row)));
+        assert.ok(options.every((row) => !/Add source|Remove source/u.test(row)));
+        return labels[0];
       },
-      undefined,
+      (title, options) => {
+        assert.equal(title, "Source: MIT Research");
+        assert.deepEqual(options, ["Disable source", "Back to sources"]);
+        return "Back to sources";
+      },
+      (_title, options) => {
+        assert.deepEqual(options, labels);
+        return undefined;
+      },
     ],
-    inputs: [" Local Lab ", "HTTPS://Feeds.Example.test:443/lab.xml#section"],
   });
 
   await menu.run();
 
-  assert.deepEqual((await readSources(root)).at(-1), {
-    name: "Local Lab",
-    url: "https://feeds.example.test/lab.xml",
-    enabled: true,
-  });
-  assert.equal(menu.calls.inputs.length, 2);
-  assert.deepEqual(requests, []);
+  assert.deepEqual(await readSources(root), sources);
+  assert.equal(menu.calls.inputs.length, 0);
 });
 
-test("/source lists duplicate names distinctly, toggles one source, then removes only that source", async (t) => {
+test("/source toggles the selected URL and preserves sources added while menus are open", async (t) => {
   const root = await temporaryRoot(t);
   const sourceA = { name: "Shared", url: "https://feeds.example.test/a.xml", enabled: true };
   const sourceB = { name: "Shared", url: "https://feeds.example.test/b.xml", enabled: true };
-  await writeSources(root, [sourceA, sourceB]);
-  await writeFile(join(root, "content.sqlite"), "keep-library-data");
-  const chooseA = (_title, options) => {
-    const rows = options.filter((option) => option.includes(sourceA.url));
-    assert.equal(rows.length, 1);
-    return rows[0];
+  const sourceC = {
+    name: "Added before selection",
+    url: "https://feeds.example.test/c.xml",
+    enabled: true,
   };
+  const sourceD = {
+    name: "Added before toggle",
+    url: "https://feeds.example.test/d.xml",
+    enabled: true,
+  };
+  await writeSources(root, [sourceA, sourceB]);
+  let callbackSnapshot;
   const menu = commandHarness(root, {
+    onChanged: async () => {
+      callbackSnapshot = await readSources(root);
+    },
     selections: [
-      (_title, options) => {
-        const rows = options.filter((option) => option.includes("https://feeds.example.test/"));
-        assert.equal(rows.length, 2);
-        assert.notEqual(rows[0], rows[1], "same-name sources need unique selection labels");
-        assert.ok(rows.every((row) => /enabled/i.test(row)));
-        return chooseA(_title, options);
+      async (title, options) => {
+        assert.equal(title, "Reading sources");
+        assert.deepEqual(options, [sourceLabel(sourceA, 0), sourceLabel(sourceB, 1)]);
+        await writeSources(root, [sourceC, sourceA, sourceB]);
+        return sourceLabel(sourceA, 0);
       },
-      "Disable source",
-      (_title, options) => {
-        const rows = options.filter((option) => option.includes(sourceA.url));
-        assert.equal(rows.length, 1);
-        assert.match(rows[0], /disabled/i);
-        return rows[0];
+      async (title, options) => {
+        assert.equal(title, "Source: Shared");
+        assert.deepEqual(options, ["Disable source", "Back to sources"]);
+        await writeSources(root, [sourceC, sourceA, sourceB, sourceD]);
+        return "Disable source";
       },
-      "Remove source",
-      undefined,
+      (_title, options) => {
+        assert.deepEqual(options, [
+          sourceLabel(sourceC, 0),
+          sourceLabel({ ...sourceA, enabled: false }, 1),
+          sourceLabel(sourceB, 2),
+          sourceLabel(sourceD, 3),
+        ]);
+        return undefined;
+      },
     ],
   });
 
   await menu.run();
 
-  assert.deepEqual(await readSources(root), [sourceB]);
-  assert.equal(await readFile(join(root, "content.sqlite"), "utf8"), "keep-library-data");
+  const finalSources = [sourceC, { ...sourceA, enabled: false }, sourceB, sourceD];
+  assert.deepEqual(await readSources(root), finalSources);
+  assert.deepEqual(callbackSnapshot, finalSources, "the callback runs after the change is saved");
+  assert.match(menu.calls.notifications[0]?.message ?? "", /Disabled Shared/u);
 });
 
-test("cancelling the selector or an add prompt exits without changing sources", async (t) => {
+test("an empty source list asks the agent to add sources and returns", async (t) => {
+  const root = await temporaryRoot(t);
+  await writeSources(root, []);
+  const menu = commandHarness(root, { selections: ["anything"] });
+
+  await menu.run();
+
+  assert.equal(menu.calls.selections.length, 0);
+  assert.match(menu.calls.notifications[0]?.message ?? "", /Ask your agent to add/u);
+  assert.deepEqual(await readSources(root), []);
+});
+
+test("cancelling either selector exits without changing sources", async (t) => {
   const root = await temporaryRoot(t);
   const initial = await readSources(root);
   const topCancel = commandHarness(root, { selections: [undefined] });
@@ -127,32 +159,14 @@ test("cancelling the selector or an add prompt exits without changing sources", 
   await topCancel.run();
 
   assert.deepEqual(await readSources(root), initial);
-  assert.equal(topCancel.calls.inputs.length, 0);
 
-  const inputCancel = commandHarness(root, {
-    selections: ["Add source"],
-    inputs: ["Incomplete source", undefined],
+  const actionCancel = commandHarness(root, {
+    selections: [sourceLabel(initial[0], 0), undefined],
   });
-  await inputCancel.run();
+  await actionCancel.run();
 
-  assert.equal(inputCancel.calls.selections.length, 1, "input cancellation exits the menu");
+  assert.equal(actionCancel.calls.selections.length, 2);
   assert.deepEqual(await readSources(root), initial);
-});
-
-test("a duplicate feed URL entered in the menu reports a useful error and saves nothing", async (t) => {
-  const root = await temporaryRoot(t);
-  const menu = commandHarness(root, {
-    selections: ["Add source", undefined],
-    inputs: ["Duplicate", "HTTPS://NEWS.MIT.EDU:443/rss/research#tag"],
-  });
-
-  await menu.run();
-
-  assert.match(menu.calls.notifications[0]?.message ?? "", /duplicate.*(feed )?URL/i);
-  assert.deepEqual(
-    (await readSources(root)).map(({ name }) => name),
-    ["MIT Research", "JSTOR Daily", "Psyche"],
-  );
 });
 
 test("/source exits cleanly when Pi has no interactive UI", async (t) => {
@@ -163,5 +177,5 @@ test("/source exits cleanly when Pi has no interactive UI", async (t) => {
 
   assert.equal(menu.calls.selections.length, 0);
   assert.equal(menu.calls.inputs.length, 0);
-  assert.match(menu.calls.notifications[0]?.message ?? "", /interactive/i);
+  assert.match(menu.calls.notifications[0]?.message ?? "", /interactive/u);
 });
