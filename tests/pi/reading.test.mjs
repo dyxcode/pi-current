@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,16 @@ function feed(id) {
     <pubDate>Tue, 03 Nov 2026 00:00:00 GMT</pubDate><description>PUBLIC_FEED_SUMMARY</description>
     <content:encoded><![CDATA[<p>LOCAL_READING_BODY ${id}</p>]]></content:encoded></item>
   </channel></rss>`;
+}
+
+function website(feeds) {
+  const links = feeds
+    .map(
+      ({ title, type = "application/rss+xml", url }) =>
+        `<link rel="alternate" type="${type}" title="${title}" href="${url}">`,
+    )
+    .join("");
+  return `<!doctype html><html><head><title>Synthetic publication</title>${links}</head><body>Fixture homepage</body></html>`;
 }
 
 async function fixture(t, list = sources) {
@@ -89,6 +99,182 @@ test("Pi adds a verified source through conversation and prepares it for reading
   assert.equal(reading.structuredContent.count, 1);
   const saved = await f.library.read(reading.structuredContent.references[0]);
   assert.equal(saved.title, "new urban life");
+});
+
+test("Pi resolves a website's single feed and recommends its prepared articles", async (t) => {
+  const homepageUrl = "https://example.com/journal";
+  const feedUrl = "https://example.com/journal/feed.xml";
+  const { requests } = mockPages(t, {
+    response: ({ url }) =>
+      url.href === homepageUrl
+        ? { body: website([{ title: "Journal feed", url: "/journal/feed.xml" }]) }
+        : { body: feed("journal"), headers: { "content-type": "application/rss+xml" } },
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+  let prepared;
+  const background = new Promise((resolve) => {
+    prepared = resolve;
+  });
+  const context = {
+    hasUI: true,
+    ui: {
+      setStatus: (_key, value) => {
+        if (/processed 1 article/.test(value ?? "")) prepared();
+      },
+    },
+  };
+  t.after(async () => {
+    for (const handler of f.extension.handlers.get("session_shutdown") ?? [])
+      await handler({ type: "session_shutdown", reason: "reload" }, context);
+  });
+  for (const handler of f.extension.handlers.get("session_start") ?? [])
+    await handler({ type: "session_start", reason: "startup" }, context);
+
+  const result = await add.execute("add", { name: "Journal", url: homepageUrl });
+  assert.deepEqual(result.structuredContent.source, {
+    name: "Journal",
+    url: feedUrl,
+    enabled: true,
+  });
+  assert.equal(result.structuredContent.added, true);
+  assert.deepEqual(await readSources(f.data), [{ name: "Journal", url: feedUrl, enabled: true }]);
+  await background;
+  const reading = await f.find.execute("recommend", {});
+  assert.equal(reading.structuredContent.count, 1);
+  assert.equal(
+    (await f.library.read(reading.structuredContent.references[0])).title,
+    "journal urban life",
+  );
+  assert.equal(requests.filter(({ url }) => url.href === homepageUrl).length, 1);
+  assert.ok(requests.filter(({ url }) => url.href === feedUrl).length >= 2);
+});
+
+test("Pi returns multiple website feeds without fetching or saving them, then accepts the selected feed URL", async (t) => {
+  const homepageUrl = "https://example.com/multiple";
+  const candidates = [
+    { title: "Technology", url: "https://example.com/technology.xml" },
+    { title: "Culture", url: "https://example.com/culture.atom" },
+  ];
+  const { requests } = mockPages(t, {
+    response: ({ url }) =>
+      url.href === homepageUrl
+        ? {
+            body: website([
+              { title: "Technology", url: "/technology.xml" },
+              { title: "Culture", type: "application/atom+xml", url: "/culture.atom" },
+            ]),
+          }
+        : { body: feed("selected"), headers: { "content-type": "application/rss+xml" } },
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+
+  const discovery = await add.execute("discover", { name: "Publication", url: homepageUrl });
+  assert.deepEqual(discovery.structuredContent.candidates, candidates);
+  assert.equal(discovery.structuredContent.added, false);
+  assert.equal("source" in discovery.structuredContent, false);
+  assert.match(discovery.structuredContent.message, /select a candidate/i);
+  assert.deepEqual(await readSources(f.data), []);
+  assert.deepEqual(
+    requests.map(({ url }) => url.href),
+    [homepageUrl],
+    "discovery does not fetch any candidate feed",
+  );
+
+  const selected = await add.execute("add-selected", {
+    name: "Technology",
+    url: candidates[0].url,
+  });
+  assert.equal(selected.structuredContent.added, true);
+  assert.deepEqual(selected.structuredContent.source, {
+    name: "Technology",
+    url: candidates[0].url,
+    enabled: true,
+  });
+  assert.deepEqual(await readSources(f.data), [selected.structuredContent.source]);
+  assert.deepEqual(
+    requests.map(({ url }) => url.href),
+    [homepageUrl, candidates[0].url],
+  );
+});
+
+test("Pi reports a website with no feed and leaves subscriptions unchanged", async (t) => {
+  const homepageUrl = "https://example.com/no-feed";
+  const { requests } = mockPages(t, {
+    response: () => ({
+      body: "<html><head><title>No feed</title></head><body>Nothing here.</body></html>",
+    }),
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+
+  const result = await add.execute("discover", { name: "No feed", url: homepageUrl });
+  assert.deepEqual(result.structuredContent.candidates, []);
+  assert.equal(result.structuredContent.added, false);
+  assert.equal("source" in result.structuredContent, false);
+  assert.match(result.structuredContent.message, /no rss\/atom feed/i);
+  assert.deepEqual(await readSources(f.data), []);
+  assert.deepEqual(
+    requests.map(({ url }) => url.href),
+    [homepageUrl],
+  );
+});
+
+test("Pi keeps a disabled discovered feed unchanged without validating it", async (t) => {
+  const homepageUrl = "https://example.com/disabled-site";
+  const feedUrl = "https://example.com/disabled-feed.xml";
+  const existing = { name: "Existing", url: feedUrl, enabled: false };
+  const { requests } = mockPages(t, {
+    response: () => ({ body: website([{ title: "Existing feed", url: "/disabled-feed.xml" }]) }),
+  });
+  const f = await fixture(t, [existing]);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+
+  const result = await add.execute("duplicate", { name: "Renamed", url: homepageUrl });
+  assert.equal(result.structuredContent.added, false);
+  assert.deepEqual(result.structuredContent.source, existing);
+  assert.deepEqual(await readSources(f.data), [existing]);
+  assert.deepEqual(
+    requests.map(({ url }) => url.href),
+    [homepageUrl],
+    "a discovered duplicate retains its disabled state without validating the feed",
+  );
+});
+
+test("Pi shutdown cancels validation of a discovered feed before it can be saved", async (t) => {
+  const homepageUrl = "https://example.com/cancel-site";
+  const feedUrl = "https://example.com/cancel-feed.xml";
+  let validating;
+  const validationStarted = new Promise((resolve) => {
+    validating = resolve;
+  });
+  const { requests } = mockPages(t, {
+    response: ({ url }) => {
+      if (url.href === homepageUrl)
+        return { body: website([{ title: "Cancel feed", url: "/cancel-feed.xml" }]) };
+      validating();
+      return undefined;
+    },
+  });
+  const f = await fixture(t, []);
+  const add = f.tools.find((tool) => tool.name === "current_source_add");
+  assert.ok(add);
+  const pending = add.execute("add", { name: "Cancel", url: homepageUrl });
+  const cancelled = assert.rejects(pending, /CANCELLED/);
+  await validationStarted;
+  assert.deepEqual(
+    requests.map(({ url }) => url.href),
+    [homepageUrl, feedUrl],
+  );
+  for (const handler of f.extension.handlers.get("session_shutdown") ?? [])
+    await handler({ type: "session_shutdown", reason: "reload" }, { hasUI: false });
+  await cancelled;
+  assert.deepEqual(await readSources(f.data), []);
 });
 
 test("Pi source addition preserves a disabled subscription without fetching", async (t) => {

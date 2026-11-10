@@ -29,7 +29,9 @@ The local reading cards show results in order, with the source, publication date
 
 ## Choose your sources
 
-Ask Pi to find and add sources, for example: “Add a few sources about technology and humanities.” Pi can search for suitable feeds, validate their RSS/Atom URLs, and save them as enabled sources. A recommendation request uses your existing enabled sources. Adding an existing source keeps its name and enabled state.
+Ask Pi to find and add sources, for example: “Add a few sources about technology and humanities,” or “Subscribe to this website: https://example.org.” Pi accepts website and RSS/Atom URLs. For a website, it looks for declared feed links: one feed is validated and added automatically; multiple feeds are returned for the agent to choose according to your interests. If the page declares no feed, Pi can continue searching for an explicit feed URL.
+
+New sources are saved as enabled after feed validation. A recommendation request uses your existing enabled sources. Adding an existing source keeps its name and enabled state.
 
 Open `/source` to view source names, URLs, and enabled states, then enable or disable a source. Changes are saved automatically and update background preparation. Disabling a source excludes it from subsequent preparation and recommendations while keeping its saved articles. Enable it again to resume following it.
 

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "./content-limits.mjs";
-import type { SourceEntry, SourceInput, SourceIssue, SourceFetchResult } from "./types.ts";
-import { fetchPublicPage } from "../web/http-page.ts";
+import { type DownloadedPage, fetchPublicPage } from "../web/http-page.ts";
 import { MAX_DOM_ELEMENTS, ReadError, type ReadErrorCode } from "../web/read-types.ts";
+import { MAX_ARTICLE_BYTES, MAX_SUMMARY_CHARACTERS } from "./content-limits.mjs";
+import type { SourceEntry, SourceFetchResult, SourceInput, SourceIssue } from "./types.ts";
 
 const ATOM_NAMESPACE = "http://www.w3.org/2005/Atom";
 const RSS_CONTENT_NAMESPACE = "http://purl.org/rss/1.0/modules/content/";
@@ -404,15 +404,8 @@ function feedEntries(document: Document): { isAtom: boolean; entries: Element[] 
   );
 }
 
-export async function fetchFeed(
-  input: SourceInput,
-  signal: AbortSignal,
-): Promise<SourceFetchResult> {
-  if (signal.aborted) {
-    throw error("CANCELLED", "Feed retrieval was cancelled.");
-  }
-
-  const page = await fetchPublicPage(input.url, signal, "feed", input.validators);
+/** Parse an already-downloaded feed page without performing another HTTP request. */
+export function parseDownloadedFeed(page: DownloadedPage): SourceFetchResult {
   if (page.notModified) {
     return {
       items: [],
@@ -498,4 +491,16 @@ export async function fetchFeed(
   } finally {
     dom?.window.close();
   }
+}
+
+export async function fetchFeed(
+  input: SourceInput,
+  signal: AbortSignal,
+): Promise<SourceFetchResult> {
+  if (signal.aborted) {
+    throw error("CANCELLED", "Feed retrieval was cancelled.");
+  }
+
+  const page = await fetchPublicPage(input.url, signal, "feed", input.validators);
+  return parseDownloadedFeed(page);
 }

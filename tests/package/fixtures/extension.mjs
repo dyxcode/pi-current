@@ -1,15 +1,33 @@
+import { registerSources } from "__PACKAGE_ROOT__/src/pi/sources.ts";
 import { discoverReading } from "__PACKAGE_ROOT__/src/reading/discover.ts";
 import { addSource, readSources, writeSources } from "__PACKAGE_ROOT__/src/reading/sources.ts";
 import { sourceIdFor } from "__PACKAGE_ROOT__/src/sources/import.ts";
 import { extractDocument } from "__PACKAGE_ROOT__/src/web/extract.ts";
 import assert from "node:assert/strict";
-import { mock } from "node:test";
-import { mockPages } from "./page-harness.mjs";
-import { feedUrl, feedResponse, hasConditionalValidator } from "./feed.mjs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { openContentLibrary } from "pi-current/library";
+import { feedResponse, feedUrl, hasConditionalValidator } from "./feed.mjs";
+import { mockPages } from "./page-harness.mjs";
+
+function registerSourceTool(root, library) {
+  const tools = new Map();
+  registerSources(
+    {
+      on() {},
+      registerCommand() {},
+      registerEntryRenderer() {},
+      registerTool(tool) {
+        tools.set(tool.name, tool);
+      },
+      appendEntry() {},
+    },
+    { root, library },
+  );
+  return tools.get("current_source_add");
+}
 
 export default async function () {
   const root = dirname(fileURLToPath(import.meta.url));
@@ -18,10 +36,30 @@ export default async function () {
     { name: "Fixture reading", url: feedUrl, enabled: true },
     { name: "Disabled", url: "https://example.com/disabled", enabled: false },
   ];
+  const singleWebsite = "https://example.com/package-journal";
+  const singleFeed = "https://example.com/package-journal/feed.xml";
+  const multipleWebsite = "https://example.com/package-multiple";
+  const selectedFeed = "https://example.com/package-tech.xml";
+  const unselectedFeed = "https://example.com/package-culture.atom";
+  const noFeedWebsite = "https://example.com/package-no-feed";
   const { requests } = mockPages(
     { mock },
     {
-      response: feedResponse,
+      response: (record) => {
+        if (record.url.href === singleWebsite)
+          return {
+            body: '<html><head><link rel="alternate" type="application/rss+xml" title="Package journal" href="/package-journal/feed.xml"></head><body>Fixture homepage.</body></html>',
+          };
+        if (record.url.href === multipleWebsite)
+          return {
+            body: '<html><head><link rel="alternate" type="application/rss+xml" title="Technology" href="/package-tech.xml"><link rel="alternate" type="application/atom+xml" title="Culture" href="/package-culture.atom"></head><body>Fixture homepage.</body></html>',
+          };
+        if (record.url.href === noFeedWebsite)
+          return {
+            body: "<html><head><title>No feed</title></head><body>Fixture page.</body></html>",
+          };
+        return feedResponse(record);
+      },
     },
   );
   await writeSources(dataRoot, sources);
@@ -137,6 +175,88 @@ export default async function () {
     const duplicate = await addSource(dataRoot, sources[1]);
     assert.equal(duplicate.added, false);
     assert.equal(duplicate.source.enabled, false);
+
+    const discoveryRoot = join(dataRoot, "tool-source-discovery");
+    await writeSources(discoveryRoot, []);
+    const discoveryLibrary = openContentLibrary({ root: discoveryRoot });
+    try {
+      const add = registerSourceTool(discoveryRoot, discoveryLibrary);
+      assert.ok(add);
+
+      const singleStart = requests.length;
+      const single = await add.execute("package-single", {
+        name: "Package journal",
+        url: singleWebsite,
+      });
+      assert.equal(single.structuredContent.added, true);
+      assert.deepEqual(single.structuredContent.source, {
+        name: "Package journal",
+        url: singleFeed,
+        enabled: true,
+      });
+      assert.deepEqual(await readSources(discoveryRoot), [single.structuredContent.source]);
+      assert.deepEqual(
+        requests.slice(singleStart).map(({ url }) => url.href),
+        [singleWebsite, singleFeed],
+      );
+
+      const multipleStart = requests.length;
+      const multiple = await add.execute("package-multiple", {
+        name: "Package publication",
+        url: multipleWebsite,
+      });
+      assert.deepEqual(multiple.structuredContent.candidates, [
+        { title: "Technology", url: selectedFeed },
+        { title: "Culture", url: unselectedFeed },
+      ]);
+      assert.equal(multiple.structuredContent.added, false);
+      assert.equal("source" in multiple.structuredContent, false);
+      assert.deepEqual(await readSources(discoveryRoot), [single.structuredContent.source]);
+      assert.deepEqual(
+        requests.slice(multipleStart).map(({ url }) => url.href),
+        [multipleWebsite],
+        "candidate feeds are not fetched before selection",
+      );
+
+      const selectedStart = requests.length;
+      const selected = await add.execute("package-selected", {
+        name: "Technology",
+        url: selectedFeed,
+      });
+      assert.equal(selected.structuredContent.added, true);
+      assert.deepEqual(selected.structuredContent.source, {
+        name: "Technology",
+        url: selectedFeed,
+        enabled: true,
+      });
+      assert.deepEqual(await readSources(discoveryRoot), [
+        single.structuredContent.source,
+        selected.structuredContent.source,
+      ]);
+      assert.deepEqual(
+        requests.slice(selectedStart).map(({ url }) => url.href),
+        [selectedFeed],
+      );
+
+      const noneStart = requests.length;
+      const none = await add.execute("package-none", {
+        name: "No feed publication",
+        url: noFeedWebsite,
+      });
+      assert.deepEqual(none.structuredContent.candidates, []);
+      assert.equal(none.structuredContent.added, false);
+      assert.equal("source" in none.structuredContent, false);
+      assert.deepEqual(await readSources(discoveryRoot), [
+        single.structuredContent.source,
+        selected.structuredContent.source,
+      ]);
+      assert.deepEqual(
+        requests.slice(noneStart).map(({ url }) => url.href),
+        [noFeedWebsite],
+      );
+    } finally {
+      await discoveryLibrary.close();
+    }
   } finally {
     mock.restoreAll();
     await library.close();

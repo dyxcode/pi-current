@@ -133,13 +133,8 @@ test("invalid input fails before network access or configuration changes", async
   assert.deepEqual(await readSources(root), before);
 });
 
-test("HTML, malformed XML, and failed HTTP requests leave sources unchanged", async (t) => {
+test("malformed XML and failed HTTP requests leave sources unchanged", async (t) => {
   for (const scenario of [
-    {
-      name: "HTML",
-      response: () => ({ body: "private error page", headers: { "content-type": "text/html" } }),
-      expected: /HTML rather than RSS or Atom/i,
-    },
     {
       name: "malformed XML",
       response: () => ({
@@ -172,6 +167,93 @@ test("HTML, malformed XML, and failed HTTP requests leave sources unchanged", as
   }
 });
 
+test("a website resolves one declared feed before saving its endpoint", async (t) => {
+  const root = await temporaryRoot(t);
+  await writeSources(root, []);
+  const { requests } = feedPages(t, ({ url }) =>
+    url.pathname === "/site"
+      ? {
+          body: '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>',
+        }
+      : { body: rss(item("one")), headers: { "content-type": feedMime } },
+  );
+  const result = await addSource(root, {
+    name: "Publication",
+    url: "https://feeds.example.test/site",
+  });
+  assert.equal(result.added, true);
+  assert.deepEqual(await readSources(root), [
+    { name: "Publication", url: "https://feeds.example.test/feed.xml", enabled: true },
+  ]);
+  assert.deepEqual(
+    requests.map(({ url }) => url.pathname),
+    ["/site", "/feed.xml"],
+  );
+});
+
+test("a website pointing to a disabled subscribed feed preserves it without fetching it", async (t) => {
+  const root = await temporaryRoot(t);
+  const existing = { name: "Existing", url: "https://feeds.example.test/feed.xml", enabled: false };
+  await writeSources(root, [existing]);
+  const { requests } = feedPages(t, () => ({
+    body: '<link rel="alternate" type="application/rss+xml" href="/feed.xml">',
+  }));
+  const result = await addSource(root, {
+    name: "New name",
+    url: "https://feeds.example.test/site",
+  });
+  assert.deepEqual(result, { source: existing, added: false, issues: [] });
+  assert.deepEqual(await readSources(root), [existing]);
+  assert.equal(requests.length, 1);
+});
+
+test("multiple or absent feed declarations return candidates without changing subscriptions", async (t) => {
+  const root = await temporaryRoot(t);
+  await writeSources(root, []);
+  const { requests } = feedPages(t, ({ url }) => ({
+    body:
+      url.pathname === "/many"
+        ? '<link rel="alternate" type="application/rss+xml" title="Tech" href="/tech"><link rel="alternate" type="application/atom+xml" title="Culture" href="/culture">'
+        : "<html><body>No feed declaration here.</body></html>",
+  }));
+  const many = await addSource(root, {
+    name: "Publication",
+    url: "https://feeds.example.test/many",
+  });
+  assert.equal(many.added, false);
+  assert.deepEqual(many.candidates, [
+    { title: "Tech", url: "https://feeds.example.test/tech" },
+    { title: "Culture", url: "https://feeds.example.test/culture" },
+  ]);
+  assert.equal("source" in many, false);
+  const none = await addSource(root, {
+    name: "Publication",
+    url: "https://feeds.example.test/none",
+  });
+  assert.deepEqual(none.candidates, []);
+  assert.equal(none.added, false);
+  assert.deepEqual(await readSources(root), []);
+  assert.deepEqual(
+    requests.map(({ url }) => url.pathname),
+    ["/many", "/none"],
+  );
+});
+
+test("an invalid declared feed is never persisted", async (t) => {
+  const root = await temporaryRoot(t);
+  await writeSources(root, []);
+  feedPages(t, ({ url }) =>
+    url.pathname === "/site"
+      ? { body: '<link rel="alternate" type="application/rss+xml" href="/invalid">' }
+      : { body: "<rss><channel>", headers: { "content-type": feedMime } },
+  );
+  await assert.rejects(
+    addSource(root, { name: "Publication", url: "https://feeds.example.test/site" }),
+    /malformed|incomplete/i,
+  );
+  assert.deepEqual(await readSources(root), []);
+});
+
 test("cancellation during feed retrieval leaves sources unchanged", async (t) => {
   const root = await temporaryRoot(t);
   const before = await readSources(root);
@@ -190,7 +272,7 @@ test("cancellation during feed retrieval leaves sources unchanged", async (t) =>
       { name: "Cancelled feed", url: "https://feeds.example.test/cancelled.xml" },
       controller.signal,
     ),
-    /^Error: CANCELLED$/,
+    /CANCELLED/,
   );
 
   assert.deepEqual(await readSources(root), before);

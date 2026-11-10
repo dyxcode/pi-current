@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fetchFeedWithDeadline, normalizeFeedUrl } from "../sources/import.ts";
+import { discoverFeed, type FeedCandidate } from "../sources/feed-discovery.ts";
+import type { SourceFetchResult } from "../sources/types.ts";
 import { safeRoot } from "../sources/paths.ts";
 
 export type ReadingSource = { name: string; url: string; enabled: boolean };
+export type AddSourceResult =
+  | { source: ReadingSource; added: boolean; issues: string[] }
+  | { candidates: FeedCandidate[]; added: false; issues: string[] };
 
 const sourceFileName = "sources.json";
 const sourceUpdates = new Map<string, Promise<void>>();
@@ -136,12 +141,12 @@ export async function updateSources(
   }
 }
 
-/** Validate, retrieve and parse one feed before adding it to the local source list. */
+/** Resolve a website or feed URL and validate the selected feed before saving it. */
 export async function addSource(
   root: string,
   input: { name: string; url: string },
   signal?: AbortSignal,
-): Promise<{ source: ReadingSource; added: boolean; issues: string[] }> {
+): Promise<AddSourceResult> {
   if (signal?.aborted) throw new Error("CANCELLED");
   const candidate = sourceList([{ name: input.name, url: input.url, enabled: true }])[0];
   if (!candidate) throw new Error("Invalid source list: expected a source.");
@@ -151,21 +156,36 @@ export async function addSource(
   const duplicate = existing.find((source) => source.url === candidate.url);
   if (duplicate) return { source: duplicate, added: false, issues: [] };
 
-  const fetched = await fetchFeedWithDeadline({ url: candidate.url }, signal);
+  const discovery = await discoverFeed(candidate.url, signal);
+  if (signal?.aborted) throw new Error("CANCELLED");
+  let resolved = candidate;
+  let fetched: SourceFetchResult;
+  if ("candidates" in discovery) {
+    const selected = discovery.candidates[0];
+    if (discovery.candidates.length !== 1 || !selected) {
+      return { candidates: discovery.candidates, added: false, issues: [] };
+    }
+    resolved = { ...candidate, url: selected.url };
+    const configured = (await readSources(root)).find((source) => source.url === selected.url);
+    if (signal?.aborted) throw new Error("CANCELLED");
+    if (configured) return { source: configured, added: false, issues: [] };
+    fetched = await fetchFeedWithDeadline({ url: resolved.url }, signal);
+  } else {
+    fetched = discovery.feed;
+  }
   if (signal?.aborted) throw new Error("CANCELLED");
   const issues = [...new Set(fetched.issues.map(({ message }) => message))];
-  let result = { source: candidate, added: true, issues };
+  let result = { source: resolved, added: true, issues };
 
   await updateSources(
     root,
     (sources) => {
-      const concurrent = sources.find((source) => source.url === candidate.url);
+      const concurrent = sources.find((source) => source.url === resolved.url);
       if (concurrent) {
         result = { source: concurrent, added: false, issues };
         return sources;
       }
-      result = { source: candidate, added: true, issues };
-      return [...sources, candidate];
+      return [...sources, resolved];
     },
     signal,
   );
