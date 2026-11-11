@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { ExtensionAPI, AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { searchWeb } from "../web/exa.ts";
 import { MAX_QUERY_CHARACTERS, validateSearchInput } from "../web/search.ts";
