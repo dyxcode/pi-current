@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   ContentLibrary,
   LibraryBatch,
@@ -71,8 +72,16 @@ export class SQLiteContentLibrary implements ContentLibrary {
       .then(async () => {
         if (this.closed) throw new Error("LIBRARY_CLOSED");
         if (signal?.aborted) throw new Error("LIBRARY_CANCELLED");
-        const worker = fork(new URL("./worker.mjs", import.meta.url), [], {
-          execArgv: ["--max-old-space-size=256"],
+        const entry = new URL("./worker.mjs", import.meta.url);
+        const bun = process.versions.bun !== undefined;
+        const worker = fork(entry, [], {
+          execArgv: bun ? ["--no-env-file"] : ["--max-old-space-size=256"],
+          // Standalone Pi's executable must act as Bun for the worker. Run it
+          // from the library directory so Bun does not load the project's bunfig.
+          ...(bun && {
+            cwd: fileURLToPath(new URL(".", entry)),
+            env: { ...process.env, BUN_BE_BUN: "1" },
+          }),
           serialization: "advanced",
           stdio: ["ignore", "ignore", "ignore", "ipc"],
         });
