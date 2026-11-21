@@ -1,14 +1,97 @@
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
+const [standalone, ...extraArgs] = process.argv.slice(2);
+if ((standalone !== undefined && !isAbsolute(standalone)) || extraArgs.length > 0) {
+  throw new Error("Usage: npm run check:package -- [/absolute/path/to/pi]");
+}
 const root = await mkdtemp(join(tmpdir(), "pi-current-package-install-"));
 const cache = join(root, "cache");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmOptions = ["--ignore-scripts", "--no-audit", "--no-fund", "--cache", cache];
+
+async function checkStandalone(executable, installed, version) {
+  if (execFileSync(executable, ["--version"], { encoding: "utf8" }).trim() !== version) {
+    throw new Error(`Standalone check requires Pi ${version}`);
+  }
+  const home = join(root, "home");
+  const agent = join(root, "standalone-agent");
+  const data = join(root, "data");
+  const libraryRoot =
+    process.platform === "darwin"
+      ? join(home, "Library", "Application Support", "pi-current")
+      : join(data, "pi-current");
+  await mkdir(agent);
+  await mkdir(libraryRoot, { recursive: true });
+  await writeFile(join(libraryRoot, "sources.json"), "[]");
+  await writeFile(
+    join(agent, "settings.json"),
+    JSON.stringify({ packages: [installed], defaultProjectTrust: "never", enableAnalytics: false }),
+  );
+  await writeFile(
+    join(agent, "models.json"),
+    JSON.stringify({
+      providers: {
+        fixture: {
+          baseUrl: "http://127.0.0.1:1/v1",
+          apiKey: "synthetic",
+          api: "openai-completions",
+          models: [{ id: "fixture", contextWindow: 8192, maxTokens: 1024 }],
+        },
+      },
+    }),
+  );
+  const extension = join(root, "standalone.mjs");
+  await cp(join(repo, "tests/package/fixtures/standalone.mjs"), extension);
+  const result = join(root, "standalone-result.json");
+  execFileSync(
+    executable,
+    [
+      "--mode",
+      "rpc",
+      "--offline",
+      "--no-approve",
+      "--no-session",
+      "--provider",
+      "fixture",
+      "--model",
+      "fixture",
+      "--extension",
+      extension,
+    ],
+    {
+      cwd: join(root, "unrelated"),
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_DATA_HOME: data,
+        PI_CODING_AGENT_DIR: agent,
+        PI_TELEMETRY: "0",
+        BUN_BE_BUN: undefined,
+        PI_CURRENT_PACKAGE_LIBRARY_ROOT: libraryRoot,
+        PI_CURRENT_PACKAGE_RESULT: result,
+      },
+      stdio: ["pipe", "inherit", "inherit"],
+      timeout: 15_000,
+    },
+  );
+  const outcome = JSON.parse(await readFile(result, "utf8"));
+  if (outcome.passed !== true) throw new Error(outcome.error ?? "Standalone package probe failed");
+  execFileSync(process.execPath, ["--test", join(repo, "tests/library/pi-worker.test.mjs")], {
+    cwd: repo,
+    env: { ...process.env, PI_CURRENT_TEST_PI_EXECUTABLE: executable },
+    stdio: "inherit",
+  });
+  console.log(
+    `PASS: installed Current loads on Pi ${version} standalone and uses its library and parser.`,
+  );
+}
+
 try {
   execFileSync(npm, ["run", "build:library"], { cwd: repo, stdio: "inherit" });
   const manifest = JSON.parse(await readFile(join(repo, "package.json"), "utf8"));
@@ -133,6 +216,9 @@ void [version, body, content, inspect, candidateAsSource, preparation];
   console.log(
     `PASS: independent production installation on ${process.version}; tested Pi peers ${Object.values(dependencies)[1]}.`,
   );
+  if (standalone) {
+    await checkStandalone(standalone, installed, dependencies["@earendil-works/pi-coding-agent"]);
+  }
 } finally {
   if (process.env.PI_CURRENT_PACKAGE_CHECK_KEEP === "1")
     console.log(`Retained package fixture: ${root}`);
